@@ -178,12 +178,12 @@ streamlit run app.py
 
 # 9. 프로젝트 특징
 
-✅ 머신러닝 기반 고객 이탈 예측
-✅ Streamlit Dashboard 구현
-✅ PDF Report 자동 생성
-✅ 고객 분석 시각화
-✅ Feature Importance 제공
-✅ 로그인 기반 접근 제어
+- ✅ 머신러닝 기반 고객 이탈 예측
+- ✅ Streamlit Dashboard 구현
+- ✅ PDF Report 자동 생성
+- ✅ 고객 분석 시각화
+- ✅ Feature Importance 제공
+- ✅ 로그인 기반 접근 제어
 
 ---
 
