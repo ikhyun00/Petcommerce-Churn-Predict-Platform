@@ -179,14 +179,14 @@ streamlit run app.py
 # 9. 화면 예시
 
 ## 메인 Dashboard
-![Uploading image.png…]()
+![메인 대시보드](assets/screenshots/main_dashboard.png)
 
 
 ---
 
 ## 고객 이탈 예측
-(스크린샷 추가 예정)
-
+![이탈 예측 결과 화면1](assets/screenshots/churn_predict1.png)
+![이탈 예측 결과 화면2](assets/screenshots/churn_predict2.png)
 ---
 
 ## PDF Report
