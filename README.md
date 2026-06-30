@@ -179,7 +179,8 @@ streamlit run app.py
 # 9. 화면 예시
 
 ## 메인 Dashboard
-(스크린샷 추가 예정)
+![Uploading image.png…]()
+
 
 ---
 
