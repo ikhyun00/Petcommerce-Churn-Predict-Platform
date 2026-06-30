@@ -179,14 +179,13 @@ streamlit run app.py
 # 9. 화면 예시
 
 ## 메인 Dashboard
-![메인 대시보드](assets/screenshots/main_dashboard.png)
-
+(스크린샷 추가 예정)
 
 ---
 
 ## 고객 이탈 예측
-![이탈 예측 결과 화면1](assets/screenshots/churn_predict1.png)
-![이탈 예측 결과 화면2](assets/screenshots/churn_predict2.png)
+(스크린샷 추가 예정)
+
 ---
 
 ## PDF Report
@@ -219,9 +218,9 @@ streamlit run app.py
 
 | 이름 | 역할 |
 | :--- | :--- |
-| 조익현 | ML 모델링, DB, 보안 |
-| 김수민 | 프론트엔드(Streamlit UI), ML 모델링 |
-| 김새한 | 프론트엔드(Streamlit UI), 데이터 수집 및 전처리 |
+| 조익현 | ML 모델링, 백엔드 |
+| 김수민 | 데이터 분석, 시각화 |
+| 김새한 | 프론트엔드(Streamlit UI), 인증 |
 
 AI · Machine Learning · Data Analysis
 
