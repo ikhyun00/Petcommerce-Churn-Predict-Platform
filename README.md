@@ -218,9 +218,9 @@ streamlit run app.py
 
 | 이름 | 역할 |
 | :--- | :--- |
-| 조익현 | ML 모델링, 백엔드 |
-| 김수민 | 데이터 분석, 시각화 |
-| 김새한 | 프론트엔드(Streamlit UI), 인증 |
+| 조익현 | ML 모델링, DB, 보안 |
+| 김수민 | 프론트엔드(Streamlit UI), ML 모델링 |
+| 김새한 | 프론트엔드(Streamlit UI), 데이터 수집 및 전처리 |
 
 AI · Machine Learning · Data Analysis
 
