@@ -1462,6 +1462,64 @@ def fit_dual_router_models(
     }
 
 
+_RISK_GRADE_ORDER = {"Low": 0, "Medium": 1, "High": 2, "Critical": 3}
+_RISK_GRADE_ORDER_INV = {v: k for k, v in _RISK_GRADE_ORDER.items()}
+
+
+def compute_risk_grade(
+    df: pd.DataFrame,
+    prob_col: str = "churn_prob",
+    percentile_col: Optional[str] = "risk_percentile",
+    min_n_for_percentile: int = 50,
+    percentile_cuts: Tuple[float, float, float] = (0.90, 0.70, 0.40),
+    min_prob_floor: float = 0.30,
+) -> pd.Series:
+    """업로드된 데이터셋 "안에서의" 상대 순위(percentile)로 Critical/High/Medium/Low를 매긴다.
+
+    petcommerce 내부 데이터로 고정한 절대 임계값(0.8/0.6/0.4)은 외부 검증에서 도메인이
+    바뀌면 재현율이 크게 흔들리는 것으로 확인됐다 (ROC-AUC는 0.7대로 유지되지만 F1은
+    모델·데이터셋마다 0.08~0.87까지 요동침). 여러 사용자가 각자 다른 판매 데이터를
+    업로드하는 이 플랫폼 구조상, 절대 확률 커트라인보다 "이 데이터셋 안에서 상위 몇 %인가"가
+    더 안정적으로 전이된다.
+
+    percentile_cuts의 (0.90, 0.70, 0.40)은 이미 이 함수 위쪽에서 쓰이던 risk_group의
+    high(>=0.9)/medium(>=0.7) 경계를 그대로 재사용하고 Medium/Low 구분을 위해 0.40을 추가한 것으로,
+    risk_group과 Critical 등급 인원이 정확히 일치하도록 맞춰져 있다.
+
+    안전장치 두 가지:
+    - 표본이 min_n_for_percentile 미만이면 percentile이 한두 명 차이로 튀므로 절대 임계값으로 폴백.
+    - churn_prob 자체가 min_prob_floor 미만인데 상위 %라는 이유만으로 Critical/High로
+      과대 표시되지 않도록 Medium 이하로 캡.
+    """
+    prob = pd.to_numeric(df[prob_col], errors="coerce").fillna(0.0).clip(lower=0, upper=1)
+    n = len(df)
+
+    def _absolute(p: pd.Series) -> pd.Series:
+        return pd.cut(
+            p, bins=[-0.01, 0.4, 0.6, 0.8, 1.01],
+            labels=["Low", "Medium", "High", "Critical"],
+        ).astype(object)
+
+    if n < min_n_for_percentile:
+        return _absolute(prob)
+
+    if percentile_col and percentile_col in df.columns:
+        pct = pd.to_numeric(df[percentile_col], errors="coerce")
+    else:
+        pct = prob.rank(pct=True)
+
+    c_critical, c_high, c_medium = percentile_cuts
+    relative_grade = pd.Series("Low", index=df.index, dtype=object)
+    relative_grade[pct >= c_medium] = "Medium"
+    relative_grade[pct >= c_high] = "High"
+    relative_grade[pct >= c_critical] = "Critical"
+
+    rel_rank_num = relative_grade.map(_RISK_GRADE_ORDER)
+    low_prob_mask = prob < min_prob_floor
+    capped_rank_num = rel_rank_num.where(~low_prob_mask, rel_rank_num.clip(upper=_RISK_GRADE_ORDER["Medium"]))
+    return capped_rank_num.map(_RISK_GRADE_ORDER_INV)
+
+
 def get_model_risk_label(prob: float, router_key: str) -> str:
     if pd.isna(prob):
         return "판단불가"
@@ -1598,6 +1656,7 @@ def score_customers(
         return "low"
 
     display_df["risk_group"] = display_df["risk_percentile"].apply(risk_group)
+    display_df["risk_grade"] = compute_risk_grade(display_df)
     display_df["model_risk"] = display_df["churn_prob"].apply(lambda x: get_model_risk_label(x, router_key))
     return display_df.sort_values("churn_prob", ascending=False).reset_index(drop=True)
 
