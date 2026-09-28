@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from .analytics import compute_rfm_and_risk
+from .churn_model import compute_risk_grade
 from .pdf_export import build_report_pdf
 from .report_component import (
     section_header,
@@ -882,17 +883,6 @@ def _render_compare_section_style():
     )
 
 
-def _ml_risk_grade(prob: float) -> str:
-    p = _safe_float(prob, 0.0)
-    if p >= 0.8:
-        return "Critical"
-    if p >= 0.6:
-        return "High"
-    if p >= 0.4:
-        return "Medium"
-    return "Low"
-
-
 def _prepare_ml_scored_view(churn_scored: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(churn_scored, pd.DataFrame) or churn_scored.empty:
         return pd.DataFrame()
@@ -936,7 +926,9 @@ def _prepare_ml_scored_view(churn_scored: pd.DataFrame) -> pd.DataFrame:
     df["protection_value"] = (df["churn_prob"] * df["protection_value_base"]).round(0)
     df["protection_value_strict_30d"] = (df["churn_prob"] * df["recent_30d_actual_sales"]).round(0)
 
-    df["risk_grade"] = df["churn_prob"].apply(_ml_risk_grade)
+    if "risk_grade" not in df.columns:
+        # score_customers()를 거친 데이터는 이미 risk_grade가 채워져 있어 이 블록은 스킵됨.
+        df["risk_grade"] = compute_risk_grade(df)
     df["expected_loss"] = (df["churn_prob"].fillna(0) * df["lifetime_sales"].fillna(0)).round(0)
     df["expected_loss_30d"] = df["protection_value"]
 
