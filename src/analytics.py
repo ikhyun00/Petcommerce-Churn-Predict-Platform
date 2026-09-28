@@ -860,7 +860,7 @@ def compute_rfm_and_risk(df: pd.DataFrame) -> Dict[str, Any]:
     churn_scored = _load_churn_scored(work)
     churn_summary = {
         "avg_churn_prob": float(churn_scored["churn_prob"].mean()) if len(churn_scored) and "churn_prob" in churn_scored.columns else 0.0,
-        "high_risk_count": int((churn_scored["churn_prob"] >= 0.8).sum()) if len(churn_scored) and "churn_prob" in churn_scored.columns else 0,
+        "high_risk_count": int((churn_scored["risk_grade"] == "Critical").sum()) if len(churn_scored) and "risk_grade" in churn_scored.columns else (int((churn_scored["churn_prob"] >= 0.8).sum()) if len(churn_scored) and "churn_prob" in churn_scored.columns else 0),
         "rule_dormant_count": int((churn_scored["rule_risk"] == "휴면").sum()) if len(churn_scored) and "rule_risk" in churn_scored.columns else 0,
         "rule_risk_count": int((churn_scored["rule_risk"] == "위험").sum()) if len(churn_scored) and "rule_risk" in churn_scored.columns else 0,
     }
