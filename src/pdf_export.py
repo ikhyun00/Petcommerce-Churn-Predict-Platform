@@ -11,6 +11,8 @@ from typing import Any
 import pandas as pd
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from .churn_model import compute_risk_grade
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -302,9 +304,9 @@ def _prepare_ml_pdf_view(ml_df: pd.DataFrame) -> pd.DataFrame:
         df["expected_loss_30d"] = pd.to_numeric(df["expected_loss_30d"], errors="coerce").fillna(df["protection_value"])
 
     if "risk_grade" not in df.columns:
-        df["risk_grade"] = df["churn_prob"].apply(
-            lambda p: "Critical" if p >= 0.8 else "High" if p >= 0.6 else "Medium" if p >= 0.4 else "Low"
-        )
+        # score_customers()를 거친 데이터는 이미 risk_grade가 채워져 있어 이 블록 자체가 스킵됨.
+        # 여기서는 옛 캐시/CSV처럼 risk_grade 없이 들어오는 경우를 위한 폴백으로만 동작.
+        df["risk_grade"] = compute_risk_grade(df)
 
     if "recommended_action" not in df.columns:
         recency = df["recency_days"]
