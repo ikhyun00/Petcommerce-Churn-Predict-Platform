@@ -30,12 +30,15 @@ from .paths import MODEL_DIR
 MODEL_DIR.mkdir(exist_ok=True)
 
 # 고객 전체 이탈 모델
-CUSTOMER_MODEL_PATH_3_6 = MODEL_DIR / "customer_churn_rf_3_6.pkl"
+# 파일명에 rf/lgbm이 박혀 있던 건 과거 실험 흔적(실제로는 한 번도 RandomForest가 채택된 적
+# 없었고, 6~12개월도 CatBoost로 교체됨)이라 혼동을 막기 위해 알고리즘 중립적인 이름으로 변경.
+# 실제 채택 모델명은 아래 CUSTOMER_MODEL_NAME_PATH_* 에 별도로 저장됨.
+CUSTOMER_MODEL_PATH_3_6 = MODEL_DIR / "customer_churn_model_3_6.pkl"
 CUSTOMER_FEATURE_PATH_3_6 = MODEL_DIR / "customer_churn_feature_cols_3_6.pkl"
 CUSTOMER_THRESHOLD_PATH_3_6 = MODEL_DIR / "customer_churn_threshold_3_6.pkl"
 CUSTOMER_MODEL_NAME_PATH_3_6 = MODEL_DIR / "customer_churn_model_name_3_6.pkl"
 
-CUSTOMER_MODEL_PATH_6_12 = MODEL_DIR / "customer_churn_lgbm_6_12.pkl"
+CUSTOMER_MODEL_PATH_6_12 = MODEL_DIR / "customer_churn_model_6_12.pkl"
 CUSTOMER_FEATURE_PATH_6_12 = MODEL_DIR / "customer_churn_feature_cols_6_12.pkl"
 CUSTOMER_THRESHOLD_PATH_6_12 = MODEL_DIR / "customer_churn_threshold_6_12.pkl"
 CUSTOMER_MODEL_NAME_PATH_6_12 = MODEL_DIR / "customer_churn_model_name_6_12.pkl"
@@ -1268,6 +1271,26 @@ def fit_final_single_model(
 
 # =========================================================
 # 고객 전체 이탈 모델 학습
+#
+# best_model_name_3_6 / best_model_name_6_12 기본값 선정 근거
+# ------------------------------------------------------------
+# 외부 데이터셋(Kaggle Online Sales)으로 4개 후보(Logistic/LightGBM/XGBoost/CatBoost)를
+# 전부 검증한 결과:
+#   - 6~12개월: 외부 ROC-AUC가 4개 모델 다 0.70~0.73으로 랜덤(0.5)을 뚜렷이 상회 -> 실제
+#     신호가 있다고 판단. 다만 CatBoost는 walk-forward 지표는 좋았지만 실제 score_customers()
+#     라이브 스코어링(rolling 다중 스냅샷이 아닌 단일 현재 시점 피처)에 적용해보니
+#     feature_importance가 order_count_180d(66%)/avg_gap_days(21%)/category_nunique(12%)
+#     3개 피처에만 쏠려 대부분 고객이 사실상 같은 leaf로 묶여버림 (churn_prob이 2662명 중
+#     12개 값으로만 나오고 표준편차 0.0085 -> 사실상 변별력 없음, train/serve skew).
+#     같은 조건에서 XGBoost는 2336개, LightGBM은 2157개의 서로 다른 확률값을 정상적으로
+#     생성 -> 오프라인 지표가 비슷하다면(XGBoost 외부 ROC-AUC 0.7249, CatBoost 0.7255로
+#     사실상 동률) 실제 서빙에서 정상 동작하는 XGBoost를 채택.
+#   - 3~6개월: 외부 ROC-AUC가 4개 모델 다 0.51~0.55로 랜덤 수준(단일 split 검증이라 이
+#     차이는 오차범위 안) -> 이 신호는 내부의 8회 walk-forward 평균 결과를 뒤집을 만큼
+#     신뢰할 수 없다고 보고, 더 견고한 내부 PR-AUC 1위 모델(Logistic)을 그대로 채택.
+# 원칙 정리: (1) 외부 검증이 랜덤을 뚜렷이 넘어설 때만 내부 결과를 뒤집는다,
+#           (2) 오프라인 지표가 동률이면 반드시 라이브 스코어링까지 재현해보고 실제로
+#               변별력 있는 확률을 내는 모델을 고른다 (오프라인 AUC만으로는 못 잡는 결함이 있음).
 # =========================================================
 
 def train_and_save_customer_models(
@@ -1282,8 +1305,8 @@ def train_and_save_customer_models(
     min_personal_horizon: int = 30,
     max_personal_horizon: int = 90,
     gap_multiplier: float = 1.8,
-    best_model_name_3_6: str = "xgboost",
-    best_model_name_6_12: str = "logistic",
+    best_model_name_3_6: str = "logistic",
+    best_model_name_6_12: str = "xgboost",
     verbose: bool = True,
 ) -> Dict:
     raw_df = pd.read_csv(input_csv_path)
