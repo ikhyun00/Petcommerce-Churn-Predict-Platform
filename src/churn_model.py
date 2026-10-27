@@ -1195,6 +1195,7 @@ def get_category_model():
             colsample_bytree=0.8,
             random_state=42,
             n_jobs=-1,
+            verbose=-1,
         )
     except Exception:
         return RandomForestClassifier(
@@ -1261,6 +1262,65 @@ def fit_final_single_model(
         "threshold_table": th_df,
         "feature_cols": feature_cols,
         "feature_set": feature_set,
+        "metrics": metrics,
+        "test_df": df.loc[test_idx].copy().assign(
+            pred_prob=test_prob,
+            pred_label=test_pred,
+        ),
+    }
+
+
+def fit_final_custom_model(
+    model_df: pd.DataFrame,
+    model,
+    feature_cols: List[str],
+    target_col: str,
+    sort_cols: Optional[List[str]] = None,
+) -> Dict:
+    """모델 객체와 피처 목록을 직접 받는 학습 함수 (카테고리 이탈 모델용).
+
+    fit_final_single_model과 같은 시간 순 분할을 쓴다:
+    마지막 스냅샷 = 테스트, 그 직전 스냅샷 = 검증(임계값 선택), 나머지 = 학습.
+    """
+    sort_cols = sort_cols or ["snapshot_date", "고객ID"]
+    sort_cols = [c for c in sort_cols if c in model_df.columns]
+    df = model_df.copy().sort_values(sort_cols).reset_index(drop=True)
+
+    X, y, used_cols = prepare_X_y(df, feature_cols, target_col)
+    snap_list = sorted(df["snapshot_date"].unique())
+    if len(snap_list) < 3:
+        raise ValueError("snapshot 수가 부족합니다.")
+
+    train_snaps = snap_list[:-2]
+    valid_snaps = [snap_list[-2]]
+    test_snaps = [snap_list[-1]]
+
+    train_idx = df.index[df["snapshot_date"].isin(train_snaps)]
+    valid_idx = df.index[df["snapshot_date"].isin(valid_snaps)]
+    test_idx = df.index[df["snapshot_date"].isin(test_snaps)]
+
+    if y.loc[train_idx].nunique() < 2:
+        raise ValueError("학습 구간에 이탈/비이탈 중 한 클래스만 있어 학습할 수 없습니다.")
+
+    model.fit(X.loc[train_idx], y.loc[train_idx])
+
+    valid_prob = model.predict_proba(X.loc[valid_idx])[:, 1]
+    best_th, th_df = pick_threshold_on_validation(y.loc[valid_idx], valid_prob)
+
+    test_prob = model.predict_proba(X.loc[test_idx])[:, 1]
+    test_pred = (test_prob >= best_th).astype(int)
+    metrics = build_metrics_frame(
+        y_true=y.loc[test_idx],
+        prob=test_prob,
+        threshold=best_th,
+        pred=test_pred,
+    )
+
+    return {
+        "model": model,
+        "threshold": best_th,
+        "threshold_table": th_df,
+        "feature_cols": used_cols,
         "metrics": metrics,
         "test_df": df.loc[test_idx].copy().assign(
             pred_prob=test_prob,
@@ -1420,11 +1480,12 @@ def train_and_save_category_model(
     if len(rolling_df) == 0:
         raise ValueError("카테고리 학습 데이터가 부족합니다.")
 
-    result = fit_final_single_model(
+    result = fit_final_custom_model(
         rolling_df,
         model=get_category_model(),
         feature_cols=CATEGORY_FEATURES,
         target_col="category_churn",
+        sort_cols=["snapshot_date", "고객ID", "카테고리"],
     )
 
     joblib.dump(result["model"], CATEGORY_MODEL_PATH)
