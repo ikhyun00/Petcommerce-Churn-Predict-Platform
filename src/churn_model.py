@@ -43,11 +43,13 @@ CUSTOMER_FEATURE_PATH_6_12 = MODEL_DIR / "customer_churn_feature_cols_6_12.pkl"
 CUSTOMER_THRESHOLD_PATH_6_12 = MODEL_DIR / "customer_churn_threshold_6_12.pkl"
 CUSTOMER_MODEL_NAME_PATH_6_12 = MODEL_DIR / "customer_churn_model_name_6_12.pkl"
 
-# 카테고리 이탈 모델
-CATEGORY_MODEL_PATH = MODEL_DIR / "category_churn_lgbm.pkl"
-CATEGORY_FEATURE_PATH = MODEL_DIR / "category_churn_feature_cols.pkl"
-CATEGORY_THRESHOLD_PATH = MODEL_DIR / "category_churn_threshold.pkl"
-CATEGORY_RULE_CATS_PATH = MODEL_DIR / "category_churn_rule_cats.pkl"
+# 고객-카테고리 이탈 모델 (스냅샷 기반 단일 LightGBM, score_customer_categories 전용)
+# 주의: models/category_churn_*.pkl 은 대시보드(analytics.compute_category_churn)가 쓰는
+#       카테고리별 모델 묶음(dict)이라 형식이 다르다. 덮어쓰지 않도록 파일명을 분리한다.
+CATEGORY_MODEL_PATH = MODEL_DIR / "customer_category_churn_lgbm.pkl"
+CATEGORY_FEATURE_PATH = MODEL_DIR / "customer_category_churn_feature_cols.pkl"
+CATEGORY_THRESHOLD_PATH = MODEL_DIR / "customer_category_churn_threshold.pkl"
+CATEGORY_RULE_CATS_PATH = MODEL_DIR / "customer_category_churn_usable_cats.pkl"
 
 
 # =========================================================
@@ -1699,33 +1701,49 @@ def score_customers(
     feat = add_segment_column(feat)
     display_df = feat.copy()
     display_df["data_months"] = data_months
-    display_df["router_key"] = router_key
+    display_df["data_router_key"] = router_key
     display_df["reliability"] = reliability
 
-    if router_key == "not_enough_data":
-        prob = cold_start_rule_score(display_df)
-        pred = (prob >= 0.45).astype(int)
-        model_used = "cold_rule"
-        threshold = 0.45
-    else:
+    # 고객별 이력 구간(history_segment)으로 모델을 고른다.
+    # 학습 때 구간별로 모델을 나눴으므로, 예측도 같은 기준이어야 한다.
+    # (이전에는 업로드 데이터 전체 기간 하나로 모델을 골라, 12개월 데이터면
+    #  이력 1~4개월 고객까지 전원 6~12개월 모델로 예측되는 train/serve 불일치가 있었다.)
+    #   cold(90일 미만) -> 규칙 점수 / m3_6 -> 3~6개월 모델 / m6_12, other(1년 초과) -> 6~12개월 모델
+    segment_to_route = {
+        "cold": "not_enough_data",
+        "m3_6": "model_3_6",
+        "m6_12": "model_6_12",
+        "other": "model_6_12",
+    }
+    display_df["router_key"] = display_df["history_segment"].map(segment_to_route).fillna("model_6_12")
+
+    prob = pd.Series(np.nan, index=display_df.index, dtype=float)
+    threshold = pd.Series(np.nan, index=display_df.index, dtype=float)
+    model_used = pd.Series("", index=display_df.index, dtype=object)
+
+    cold_mask = display_df["router_key"] == "not_enough_data"
+    if cold_mask.any():
+        prob[cold_mask] = cold_start_rule_score(display_df.loc[cold_mask])
+        threshold[cold_mask] = 0.45
+        model_used[cold_mask] = "cold_rule"
+
+    if (~cold_mask).any():
         artifacts = _load_customer_artifacts()
-        if router_key == "model_3_6":
-            X, _, _ = prepare_simple_X_y(display_df.assign(churn=0), feature_set=artifacts["feature_set_3_6"])
-            X = align_columns(X, artifacts["feature_cols_3_6"])
-            prob = artifacts["model_3_6"].predict_proba(X)[:, 1]
-            threshold = artifacts["threshold_3_6"]
-            pred = (prob >= threshold).astype(int)
-            model_used = f"3_6_{artifacts['model_name_3_6']}"
-        else:
-            X, _, _ = prepare_simple_X_y(display_df.assign(churn=0), feature_set=artifacts["feature_set_6_12"])
-            X = align_columns(X, artifacts["feature_cols_6_12"])
-            prob = artifacts["model_6_12"].predict_proba(X)[:, 1]
-            threshold = artifacts["threshold_6_12"]
-            pred = (prob >= threshold).astype(int)
-            model_used = f"6_12_{artifacts['model_name_6_12']}"
+        for route, key in [("model_3_6", "3_6"), ("model_6_12", "6_12")]:
+            mask = display_df["router_key"] == route
+            if not mask.any():
+                continue
+            X, _, _ = prepare_simple_X_y(
+                display_df.loc[mask].assign(churn=0),
+                feature_set=artifacts[f"feature_set_{key}"],
+            )
+            X = align_columns(X, artifacts[f"feature_cols_{key}"])
+            prob[mask] = artifacts[f"model_{key}"].predict_proba(X)[:, 1]
+            threshold[mask] = artifacts[f"threshold_{key}"]
+            model_used[mask] = f"{key}_{artifacts[f'model_name_{key}']}"
 
     display_df["churn_prob"] = prob
-    display_df["pred_label"] = pred
+    display_df["pred_label"] = (prob >= threshold).astype(int)
     display_df["model_used"] = model_used
     display_df["threshold_used"] = threshold
     display_df["risk_percentile"] = display_df["churn_prob"].rank(pct=True)
@@ -1741,7 +1759,9 @@ def score_customers(
 
     display_df["risk_group"] = display_df["risk_percentile"].apply(risk_group)
     display_df["risk_grade"] = compute_risk_grade(display_df)
-    display_df["model_risk"] = display_df["churn_prob"].apply(lambda x: get_model_risk_label(x, router_key))
+    display_df["model_risk"] = [
+        get_model_risk_label(p, rk) for p, rk in zip(display_df["churn_prob"], display_df["router_key"])
+    ]
     return display_df.sort_values("churn_prob", ascending=False).reset_index(drop=True)
 
 
