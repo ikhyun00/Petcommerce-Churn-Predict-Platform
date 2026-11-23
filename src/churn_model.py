@@ -147,6 +147,7 @@ def build_metrics_frame(
         "recall": np.nan,
         "precision_at_10pct": precision_at_top_k(y_true, prob, 0.10),
         "precision_at_20pct": precision_at_top_k(y_true, prob, 0.20),
+        "precision_at_30pct": precision_at_top_k(y_true, prob, 0.30),
         "churn_rate": float(np.mean(y_true)) if len(y_true) > 0 else np.nan,
         "threshold": float(threshold),
         "n": int(len(y_true)),
@@ -159,6 +160,8 @@ def build_metrics_frame(
     metrics["f1"] = f1_score(y_true, pred, zero_division=0)
     metrics["precision"] = precision_score(y_true, pred, zero_division=0)
     metrics["recall"] = recall_score(y_true, pred, zero_division=0)
+    if metrics["churn_rate"]:
+        metrics["lift"] = metrics["precision"] / metrics["churn_rate"]
     return metrics
 
 
@@ -185,6 +188,29 @@ def pick_threshold_on_validation(
 
     best = th_df.sort_values(["f1", "precision"], ascending=False).iloc[0]
     return float(best["threshold"]), th_df
+
+
+# "이탈 예측"으로 표시할 비율. 위험 등급 Critical(상위 10%) + High(10~30%)와 같은 범위.
+# F1 최대 임계값은 이탈률이 높은 데이터에서 0.2~0.3대로 내려가 고객 대부분을 이탈로
+# 찍었다(재현율 0.95, 정밀도 ≈ 이탈률). 업로드 데이터마다 이탈률·확률 분포가 다르므로
+# 고정 확률 대신 "이 데이터 안에서 상위 K%"를 기준으로 쓴다.
+TOP_K_RATE = 0.30
+
+
+def topk_pred(prob: np.ndarray, k: float = TOP_K_RATE) -> np.ndarray:
+    """확률 상위 k 비율을 1로 표시한다 (동점은 순위 평균 기준)."""
+    prob = np.asarray(prob, dtype=float)
+    if len(prob) == 0:
+        return prob.astype(int)
+    pct = pd.Series(prob).rank(pct=True, method="average").to_numpy()
+    return (pct > 1 - k).astype(int)
+
+
+def pick_topk_threshold(prob: np.ndarray, k: float = TOP_K_RATE) -> Tuple[float, pd.DataFrame]:
+    """검증 구간 확률의 상위 k 경계값. 참고·표본 부족 시 폴백용으로 저장한다."""
+    prob = np.asarray(prob, dtype=float)
+    th = float(np.quantile(prob, 1 - k)) if len(prob) else 0.5
+    return th, pd.DataFrame({"top_k_rate": [k], "threshold": [th]})
 
 
 def _max_label_window(horizon_days: int, personalized: bool, max_personal_horizon: int) -> int:
@@ -1209,7 +1235,7 @@ def fit_one_model_with_validation(model_name, model, X_train, y_train, X_valid, 
         model.fit(X_train, y_train)
 
     valid_prob = model.predict_proba(X_valid)[:, 1]
-    best_th, th_df = pick_threshold_on_validation(y_valid, valid_prob)
+    best_th, th_df = pick_topk_threshold(valid_prob)
     return model, valid_prob, best_th, th_df
 
 
@@ -1295,7 +1321,7 @@ def fit_final_single_model(
     )
 
     test_prob = fitted_model.predict_proba(X.loc[test_idx])[:, 1]
-    test_pred = (test_prob >= best_th).astype(int)
+    test_pred = topk_pred(test_prob)
     metrics = build_metrics_frame(
         y_true=y.loc[test_idx],
         prob=test_prob,
@@ -1359,10 +1385,10 @@ def fit_final_custom_model(
     model.fit(X.loc[train_idx], y.loc[train_idx])
 
     valid_prob = model.predict_proba(X.loc[valid_idx])[:, 1]
-    best_th, th_df = pick_threshold_on_validation(y.loc[valid_idx], valid_prob)
+    best_th, th_df = pick_topk_threshold(valid_prob)
 
     test_prob = model.predict_proba(X.loc[test_idx])[:, 1]
-    test_pred = (test_prob >= best_th).astype(int)
+    test_pred = topk_pred(test_prob)
     metrics = build_metrics_frame(
         y_true=y.loc[test_idx],
         prob=test_prob,
@@ -1812,7 +1838,6 @@ def score_customers(
             model_used[mask] = f"{key}_{artifacts[f'model_name_{key}']}"
 
     display_df["churn_prob"] = prob
-    display_df["pred_label"] = (prob >= threshold).astype(int)
     display_df["model_used"] = model_used
     display_df["threshold_used"] = threshold
     display_df["risk_percentile"] = display_df["churn_prob"].rank(pct=True)
@@ -1828,6 +1853,9 @@ def score_customers(
 
     display_df["risk_group"] = display_df["risk_percentile"].apply(risk_group)
     display_df["risk_grade"] = compute_risk_grade(display_df)
+    # 이탈 예측 = 위험 등급 Critical·High (데이터 안 상위 30%, 확률 0.30 미만 제외).
+    # threshold_used는 학습 때 검증 구간 상위 30% 경계값으로 참고용이다.
+    display_df["pred_label"] = display_df["risk_grade"].isin(["Critical", "High"]).astype(int)
     display_df["model_risk"] = [
         get_model_risk_label(p, rk) for p, rk in zip(display_df["churn_prob"], display_df["router_key"])
     ]
@@ -1859,7 +1887,7 @@ def score_customer_categories(
     X = align_columns(feat, artifacts["feature_cols"])
     prob = artifacts["model"].predict_proba(X)[:, 1]
     threshold = artifacts["threshold"]
-    pred = (prob >= threshold).astype(int)
+    pred = topk_pred(prob) if len(prob) >= 50 else (prob >= threshold).astype(int)
 
     feat["category_churn_prob"] = prob
     feat["category_pred_label"] = pred
