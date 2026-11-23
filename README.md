@@ -147,6 +147,16 @@ PDF Report 생성
 
 평가 지표: ROC-AUC, PR-AUC, F1 Score, Precision, Recall, Precision@Top 10%·20%
 
+내부 테스트 결과 (최근 테스트 시점 2021-09-10, 관측 창 잘림 없음)
+
+| 모델 | PR-AUC | ROC-AUC | Precision@10% | 임계값(F1 최대) | 테스트 이탈률 |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| 3~6개월 Logistic | 0.661 | 0.648 | 0.649 | 0.26 | 54.8% |
+| 6~12개월 XGBoost | 0.680 | 0.756 | 0.713 | 0.28 | 43.9% |
+| 고객-카테고리 LightGBM | 0.634 | 0.639 | 0.758 | 0.22 | - |
+
+> PR-AUC 기준선은 이탈률(0.44~0.55)이므로 ROC-AUC와 함께 해석합니다. 수정 전 버전은 테스트 시점 라벨의 88%가 관측 창이 잘려 PR-AUC가 부풀려져 있었습니다.
+
 > 후보 4종(Logistic / LightGBM / XGBoost / CatBoost)을 외부 데이터셋(Kaggle Online Sales)으로 추가 검증했습니다. 6~12개월은 XGBoost(ROC-AUC 0.7249)와 CatBoost(0.7255)가 사실상 동률이었으나, CatBoost는 실제 서빙 시 2,662명에게 12종류의 확률값만 출력해 변별력이 없어 XGBoost를 채택했습니다. 3~6개월은 외부 ROC-AUC가 모든 모델 0.51~0.55로 랜덤 수준이어서, 내부 PR-AUC 1위인 Logistic Regression을 유지했습니다.
 
 ---
