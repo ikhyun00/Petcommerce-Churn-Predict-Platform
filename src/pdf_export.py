@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import datetime
 import sys
 import tempfile
 from pathlib import Path
@@ -19,13 +20,29 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 
 
+def _fmt_cell(value: Any) -> str:
+    if isinstance(value, bool) or value is None:
+        return "" if value is None else str(value)
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, float):
+        if pd.isna(value):
+            return ""
+        if value.is_integer() or abs(value) >= 1000:
+            return f"{int(round(value)):,}"
+        return f"{value:,.1f}"
+    return str(value)
+
+
 def _env() -> Environment:
-    return Environment(
+    env = Environment(
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape(["html", "xml"]),
         trim_blocks=True,
         lstrip_blocks=True,
     )
+    env.filters["cell"] = _fmt_cell
+    return env
 
 
 def _safe_int(x: Any, default: int = 0) -> int:
@@ -48,6 +65,15 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 def _fmt_currency(x: Any) -> str:
     return f"₩{_safe_int(x):,}"
+
+
+def _fmt_krw_short(x: Any) -> str:
+    v = _safe_float(x)
+    if abs(v) >= 100_000_000:
+        return f"₩{v / 100_000_000:,.1f}억"
+    if abs(v) >= 10_000:
+        return f"₩{v / 10_000:,.0f}만"
+    return f"₩{int(round(v)):,}"
 
 
 def _fmt_int(x: Any) -> str:
@@ -183,29 +209,26 @@ def _summary_lines_from_kpi(
     top_seg: str,
     top_cat: str,
     refund_rate: float,
-    avg_churn_prob: float = 0.0,
     protection_value: float = 0.0,
     critical_count: int = 0,
     high_risk_count: int = 0,
+    top_action: str = "-",
 ) -> list[str]:
-    high_ratio = _safe_float(kpi.get("high_ratio", 0))
-    avg_risk = _safe_float(kpi.get("avg_risk", 0))
-
-    lines = [
-        f"고위험 고객 비율은 {_fmt_pct(high_ratio)} 수준이며, 평균 이탈확률은 {_fmt_pct(avg_churn_prob)}입니다.",
-        f"즉시 관리 고객 {critical_count:,}명, 관리 필요 고객 {high_risk_count:,}명으로 우선 대응 대상이 구분됩니다.",
-        f"최근 실매출 기반 예상 방어가치는 {_fmt_currency(protection_value)} 수준입니다.",
-    ]
-
-    if refund_rate > 0:
-        lines.append(f"환불률은 {_fmt_pct(refund_rate)} 수준으로, 고객 경험 이슈를 함께 점검할 필요가 있습니다.")
-    if top_seg and top_seg != "-":
-        lines.append(f"고객군 기준 우선 관리 세그먼트는 {top_seg}입니다.")
+    lines = []
+    if high_risk_count:
+        lines.append(
+            f"이탈 위험 고객은 {high_risk_count:,}명이며, 이 중 {critical_count:,}명은 즉시 관리가 필요합니다."
+        )
+    if protection_value:
+        lines.append(f"이탈 위험 고객을 지키면 30일 기준 약 {_fmt_krw_short(protection_value)}의 매출을 방어할 수 있습니다.")
     if top_cat and top_cat != "-":
-        lines.append(f"카테고리 관점에서는 {top_cat} 영역을 먼저 점검하는 것이 좋습니다.")
-    if avg_risk > 0:
-        lines.append(f"참고로 평균 위험 점수는 {avg_risk:.0f}점입니다.")
-
+        lines.append(f"카테고리 중에서는 {top_cat}의 위험 점수가 가장 높아 먼저 점검이 필요합니다.")
+    if top_seg and top_seg != "-":
+        lines.append(f"가장 큰 고객군은 {top_seg}입니다.")
+    if top_action and top_action != "-":
+        lines.append(f"이탈 위험 고객에게 가장 많이 필요한 액션은 '{top_action}'입니다.")
+    if refund_rate > 0:
+        lines.append(f"환불률은 {refund_rate * 100:.1f}%로, 상품·배송 이슈를 함께 점검하세요.")
     return lines[:5]
 
 
@@ -348,8 +371,10 @@ def _build_ml_risk_bar_rows(ml_view: pd.DataFrame) -> list[dict]:
     temp.columns = ["risk_grade", "고객수"]
     temp["위험상태"] = temp["risk_grade"].map(_ml_grade_label)
     rows = _make_bar_rows(temp.to_dict(orient="records"), "위험상태", "고객수", max_items=4)
+    total = sum(r["value"] for r in rows) or 1
     for row in rows:
         row["value_display"] = f"{int(round(row['value'])):,}명"
+        row["share_pct"] = round(row["value"] / total * 100, 1)
     return rows
 
 
@@ -390,34 +415,32 @@ def _build_ml_insight_rows(ml_view: pd.DataFrame) -> list[dict]:
         return []
 
     insights: list[dict] = []
-    risk_rows = _build_ml_risk_bar_rows(ml_view)
-    if risk_rows:
-        top_risk = risk_rows[0]
-        insights.append({"항목": "가장 큰 위험상태", "내용": f"{top_risk['label']} 고객 {int(round(top_risk['value'])):,}명"})
 
     recency_rows = _build_ml_recency_bar_rows(ml_view)
     if recency_rows:
         top_bucket = max(recency_rows, key=lambda r: r.get("value", 0))
-        insights.append({"항목": "가장 많이 쌓인 휴면구간", "내용": f"{top_bucket['label']} 고객 {int(round(top_bucket['value'])):,}명"})
+        insights.append({"항목": "가장 많은 경과일 구간", "내용": f"{top_bucket['label']} · {int(round(top_bucket['value'])):,}명"})
 
     critical_value = 0
     if "risk_grade" in ml_view.columns and "expected_loss_30d" in ml_view.columns:
         critical_value = _safe_int(ml_view.loc[ml_view["risk_grade"] == "Critical", "expected_loss_30d"].fillna(0).sum(), 0)
-    insights.append({"항목": "즉시 관리 고객 영향", "내용": f"즉시 관리 고객군의 예상 방어가치는 {_fmt_currency(critical_value)}입니다."})
+    insights.append({"항목": "즉시 관리 고객의 방어 가치", "내용": f"30일 기준 {_fmt_currency(critical_value)}"})
 
     action_rows = _build_ml_action_rows(ml_view)
     if action_rows:
         top_action = action_rows[0]
-        insights.append({"항목": "가장 추천되는 액션", "내용": f"{top_action['label']} · 대상 고객 {int(round(top_action['value'])):,}명"})
+        insights.append({"항목": "가장 많은 추천 액션", "내용": f"{top_action['label']} · {int(round(top_action['value'])):,}명"})
 
     return insights[:4]
 
 
-def _prepare_ml_priority_table(ml_view: pd.DataFrame, limit: int = 28) -> list[dict]:
+def _prepare_ml_priority_table(ml_view: pd.DataFrame, limit: int = 18) -> list[dict]:
     if ml_view.empty:
         return []
 
     df = ml_view.copy()
+    if "risk_grade" in df.columns:
+        df = df[df["risk_grade"].isin(["Critical", "High"])]
     if "expected_loss_30d" in df.columns:
         df = df.sort_values("expected_loss_30d", ascending=False, na_position="last")
     elif "churn_prob" in df.columns:
@@ -449,6 +472,8 @@ def _build_context(
     inventory_df: pd.DataFrame,
     forecast: dict | None,
     selected_sections: dict,
+    refund_rate: float | None = None,
+    negative_sales_mode: str | None = None,
 ) -> dict:
     sections = _normalize_sections(selected_sections)
 
@@ -458,18 +483,9 @@ def _build_context(
     top_seg = str(segment_rows[0].get("세그먼트", "-")) if segment_rows else "-"
     top_cat = str(category_rows[0].get("카테고리", "-")) if category_rows else "-"
 
-    refund_rate = 0.0
-    if isinstance(refund_df, pd.DataFrame) and not refund_df.empty and "환불률" in refund_df.columns:
-        try:
-            refund_rate = float(pd.to_numeric(refund_df["환불률"], errors="coerce").fillna(0).max())
-        except Exception:
-            refund_rate = 0.0
+    refund_rate = _safe_float(refund_rate) if refund_rate is not None else 0.0
 
     ml_view = _prepare_ml_pdf_view(ml_df)
-
-    avg_churn_prob = 0.0
-    if not ml_view.empty and "churn_prob" in ml_view.columns:
-        avg_churn_prob = float(pd.to_numeric(ml_view["churn_prob"], errors="coerce").fillna(0).mean())
 
     critical_count = int(ml_view["risk_grade"].eq("Critical").sum()) if not ml_view.empty and "risk_grade" in ml_view.columns else 0
     high_risk_count = int(ml_view["risk_grade"].isin(["Critical", "High"]).sum()) if not ml_view.empty and "risk_grade" in ml_view.columns else 0
@@ -479,24 +495,26 @@ def _build_context(
     protection_value_total = _safe_int(ml_view.get("expected_loss_30d", pd.Series(dtype=float)).fillna(0).sum(), 0) if not ml_view.empty else 0
 
     action_rows = _build_ml_action_rows(ml_view)
-    top_action_label = action_rows[0]["label"] if action_rows else "-"
+    at_risk_view = ml_view[ml_view["risk_grade"].isin(["Critical", "High"])] if not ml_view.empty and "risk_grade" in ml_view.columns else ml_view
+    at_risk_actions = _build_ml_action_rows(at_risk_view)
+    top_action_label = at_risk_actions[0]["label"] if at_risk_actions else "-"
 
     summary_lines = _summary_lines_from_kpi(
         kpi,
         top_seg,
         top_cat,
         refund_rate,
-        avg_churn_prob=avg_churn_prob,
         protection_value=protection_value_total,
         critical_count=critical_count,
         high_risk_count=high_risk_count,
+        top_action=top_action_label,
     )
 
     ml_risk_rows = _build_ml_risk_bar_rows(ml_view)
     ml_recency_rows = _build_ml_recency_bar_rows(ml_view)
     ml_action_rows = action_rows
     ml_insight_rows = _build_ml_insight_rows(ml_view)
-    ml_priority_rows = _prepare_ml_priority_table(ml_view, limit=28)
+    ml_priority_rows = _prepare_ml_priority_table(ml_view, limit=18)
 
     refund_pdf_df = _select_existing_columns(
         refund_df,
@@ -515,7 +533,7 @@ def _build_context(
 
     inventory_pdf_df = _select_existing_columns(
         inventory_df,
-        ["펫카테고리", "카테고리", "예상판매량", "일평균판매량", "안전재고량", "권장보유일수", "우선순위", "추천액션"],
+        ["펫카테고리", "카테고리", "예상판매량", "안전재고량", "권장보유일수", "우선순위"],
         limit=8,
     )
     if not inventory_pdf_df.empty:
@@ -531,9 +549,9 @@ def _build_context(
     inventory_rows = _df_records(inventory_pdf_df, limit=8)
 
     forecast = forecast if isinstance(forecast, dict) else {}
-    forecast_label = str(forecast.get("label", "다음달 예상 매출"))
+    forecast_label = str(forecast.get("label") or "다음 달 예상 매출").replace("다음달", "다음 달")
     forecast_value = _safe_int(forecast.get("value", kpi.get("expected_loss", 0)))
-    negative_sales_mode = forecast.get("negative_sales_mode") or ""
+    negative_sales_mode = negative_sales_mode or forecast.get("negative_sales_mode") or "refund"
 
     overview_bar_rows = _make_bar_rows(category_rows, "카테고리", "위험", max_items=7) if category_rows else []
     segment_comp = _segment_comp_rows(segment_df)
@@ -548,7 +566,37 @@ def _build_context(
         elif "총매출" in category_rows[0]:
             category_bar_rows = _make_bar_rows(category_rows, "카테고리", "총매출", max_items=8)
 
+    category_insights = []
+    if category_rows:
+        cat_label_key = "카테고리"
+        risk_key = next((k for k in ["위험", "평균위험"] if k in category_rows[0]), None)
+        if risk_key:
+            vals = [(_safe_float(r.get(risk_key)), str(r.get(cat_label_key, "-")), r) for r in category_rows]
+            vals.sort(key=lambda x: x[0], reverse=True)
+            top_v, top_name, _ = vals[0]
+            low_v, low_name, _ = vals[-1]
+            category_insights.append(f"{top_name}의 평균 위험 점수가 {top_v:.0f}점으로 가장 높습니다.")
+            category_insights.append(f"가장 낮은 {low_name}({low_v:.0f}점)과의 차이는 {top_v - low_v:.0f}점입니다.")
+        cnt_key = next((k for k in ["고객수", "인원"] if k in category_rows[0]), None)
+        if cnt_key:
+            big = max(category_rows, key=lambda r: _safe_float(r.get(cnt_key)))
+            category_insights.append(f"고객이 가장 많은 카테고리는 {big.get(cat_label_key, '-')}({_safe_int(big.get(cnt_key)):,}명)입니다.")
+        category_insights.append("위험 점수가 높고 고객이 많은 카테고리부터 재구매 알림과 상품 구성을 점검하세요.")
+
+    seg_top = segment_comp[0]["label"] if segment_comp else "-"
+    if top_seg == "-" and seg_top != "-":
+        top_seg = seg_top
+    action_plan = [
+        {"title": "반복 소비 카테고리 재구매 방어", "body": "사료·패드·모래 등은 재구매 주기 3~7일 전에 리마인드와 정기배송을 제안합니다."},
+        {"title": f"즉시 관리 고객 {critical_count:,}명 우선 접촉", "body": "위험도 상위 10% 고객에게 쿠폰과 재구매 알림을 먼저 보냅니다."},
+        {"title": f"{top_cat if top_cat != '-' else '위험 카테고리'} 집중 점검", "body": "위험 점수가 가장 높은 카테고리의 가격·배송·상품 구성을 점검합니다."},
+    ]
+
     return {
+        "generated_at": datetime.now().strftime("%Y.%m.%d"),
+        "font_url": (STATIC_DIR / "fonts" / "PretendardVariable.woff2").resolve().as_uri(),
+        "action_plan": action_plan,
+        "category_insights": category_insights[:4],
         "title": title,
         "user_name": user_name,
         "run_name": run_name,
@@ -557,16 +605,18 @@ def _build_context(
         "negative_sales_mode_desc": _negative_sales_mode_desc(negative_sales_mode),
         "summary": {
             "total_customers": _fmt_int(kpi.get("total_customers", len(ml_view) if not ml_view.empty else 0)),
-            "high_ratio": _fmt_pct(kpi.get("high_ratio", 0)),
+            "high_ratio": f"{_safe_float(kpi.get('high_ratio', 0)):.1f}%",
             "avg_risk": f"{_safe_float(kpi.get('avg_risk', 0)):.0f}점",
             "expected_loss": _fmt_currency(kpi.get("expected_loss", 0)),
             "protection_value": _fmt_currency(protection_value_total),
+            "protection_value_short": _fmt_krw_short(protection_value_total),
+            "expected_loss_short": _fmt_krw_short(kpi.get("expected_loss", 0)),
+            "forecast_value_short": _fmt_krw_short(forecast_value),
             "critical_count": _fmt_int(critical_count),
             "high_risk_count": _fmt_int(high_risk_count),
             "high_manage_count": _fmt_int(high_manage_count),
             "medium_count": _fmt_int(medium_count),
-            "avg_churn_prob": _fmt_pct(avg_churn_prob),
-            "refund_rate": _fmt_pct(refund_rate),
+            "refund_rate": f"{refund_rate * 100:.1f}%",
             "forecast_label": forecast_label,
             "forecast_value": _fmt_currency(forecast_value),
             "top_action_label": top_action_label,
@@ -601,6 +651,8 @@ def build_report_pdf(
     inventory_df: pd.DataFrame,
     forecast: dict | None = None,
     selected_sections: dict | None = None,
+    refund_rate: float | None = None,
+    negative_sales_mode: str | None = None,
 ) -> bytes:
     env = _env()
     template = env.get_template("report_base.html")
@@ -625,6 +677,8 @@ def build_report_pdf(
         inventory_df=inventory_df,
         forecast=forecast,
         selected_sections=selected_sections or {},
+        refund_rate=refund_rate,
+        negative_sales_mode=negative_sales_mode,
     )
 
     temp_dir = Path(tempfile.mkdtemp(prefix="pet_pdf_"))

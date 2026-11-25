@@ -1,33 +1,24 @@
 import io
 from io import BytesIO
 from datetime import datetime
-from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
 import streamlit as st
-
-try:
-    from streamlit_extras.stylable_container import stylable_container
-except Exception:
-    @contextmanager
-    def stylable_container(key: str, css_styles: str):
-        with st.container():
-            yield
 
 
 STD_REQUIRED = ["고객ID", "주문번호", "거래일시", "매출"]
 STD_OPTIONAL = ["카테고리", "구매채널", "온라인채널", "결제수단", "시도"]
 
 
-def make_sample_data(n_tx: int = 300, seed: int = 7) -> pd.DataFrame:
+def make_sample_data(n_tx: int = 1500, seed: int = 7) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
 
-    customers = rng.integers(10000, 20000, size=120)
+    customers = rng.integers(10000, 20000, size=300)
     cust_ids = rng.choice(customers, size=n_tx, replace=True)
 
     start = datetime(2024, 1, 1)
-    end = datetime(2024, 2, 29)
+    end = datetime(2024, 6, 30)
     dates = pd.to_datetime(
         rng.integers(int(start.timestamp()), int(end.timestamp()), size=n_tx),
         unit="s",
@@ -154,122 +145,9 @@ div[data-testid="stFileUploader"] > label {
     display: none !important;
 }
 
-div[data-testid="stFileUploader"] > section {
-    padding: 0 !important;
-    border: none !important;
-    background: transparent !important;
-    box-shadow: none !important;
-}
-
-div[data-testid="stFileUploaderDropzone"] {
-    border-radius: 18px !important;
-    border: 1px solid rgba(148,163,184,0.22) !important;
-    background: #f8fafc !important;
-    padding: 18px !important;
-    min-height: 110px !important;
-    box-shadow: none !important;
-}
-
-/* 카드 유지용: 현재 잘 보이는 key 방식 유지 */
-div[data-testid="stVerticalBlockBorderWrapper"].st-key-upload_card,
-div[data-testid="stVerticalBlockBorderWrapper"].st-key-sample_card {
-    background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,255,0.98) 100%) !important;
-    border: 1px solid rgba(15,23,42,0.08) !important;
-    border-radius: 24px !important;
-    box-shadow: 0 10px 28px rgba(15,23,42,0.05) !important;
-}
-
-div[data-testid="stVerticalBlockBorderWrapper"].st-key-upload_card > div,
-div[data-testid="stVerticalBlockBorderWrapper"].st-key-sample_card > div {
-    padding: 24px 24px 18px 24px !important;
-    background: transparent !important;
-}
-
-div[data-testid="stFileUploaderDropzone"] > div {
-    padding: 0 !important;
-}
-
-.upload-card-kicker,
-.sample-card-kicker {
-    display: inline-block;
-    padding: 6px 12px;
-    border-radius: 999px;
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: .08em;
-    text-transform: uppercase;
-    margin-bottom: 14px;
-    white-space: nowrap;
-}
-
-.upload-card-kicker {
-    background: rgba(99,102,241,0.10);
-    color: #4f46e5;
-}
-
-.sample-card-kicker {
-    background: rgba(16,185,129,0.10);
-    color: #059669;
-}
-
-.upload-card-title,
-.sample-card-title {
-    font-size: 24px;
-    font-weight: 900;
-    color: #0f172a;
-    line-height: 1.22;
-    margin-bottom: 10px;
-    white-space: nowrap;
-}
-
-.upload-card-desc,
-.sample-card-desc {
-    font-size: 15px;
-    color: #64748b;
-    line-height: 1.7;
-    margin-bottom: 18px;
-    white-space: nowrap;
-}
-
-.upload-section-title {
-    font-size: 16px;
-    color: #0f172a;
-    font-weight: 800;
-    margin-bottom: 12px;
-    white-space: nowrap;
-}
-
-.upload-guideline-banner {
-    margin-top: 12px;
-    padding: 12px 14px;
-    border-radius: 14px;
-    background: rgba(245, 158, 11, 0.10);
-    border: 1px solid rgba(245, 158, 11, 0.24);
-    color: #92400E;
-    font-size: 14px;
-    font-weight: 800;
-    line-height: 1.6;
-    white-space: nowrap;
-}
-
-div[data-testid="stButton"] > button,
-div[data-testid="stDownloadButton"] > button {
-    border-radius: 14px !important;
-    min-height: 52px !important;
-    font-weight: 800 !important;
-    font-size: 16px !important;
-    white-space: nowrap !important;
-}
-
-div[data-testid="stDownloadButton"] > button {
-    background: #ffffff !important;
-    border: 1px solid rgba(15,23,42,0.08) !important;
-}
-
-div[data-testid="stButton"] > button:hover,
-div[data-testid="stDownloadButton"] > button:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 8px 18px rgba(15,23,42,0.06) !important;
+.st-key-upload_card, .st-key-sample_card {
+    padding: 24px !important;
+    height: 100%;
 }
 </style>
         """,
@@ -281,34 +159,10 @@ def _render_sidebar_compact_guide():
     with st.sidebar:
         st.markdown(
             """
-<div style="
-    padding: 16px 16px 14px;
-    border-radius: 18px;
-    background: #ffffff;
-    border: 1px solid rgba(15,23,42,0.06);
-    box-shadow: 0 8px 24px rgba(15,23,42,0.04);
-    margin-bottom: 14px;
-">
-  <div style="
-      display:inline-block;
-      padding: 5px 10px;
-      border-radius: 999px;
-      background: rgba(99,102,241,0.10);
-      color: #4f46e5;
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      margin-bottom: 10px;
-  ">Guide</div>
-  <div style="font-size: 18px; font-weight: 900; color: #0f172a; margin-bottom: 8px;">
-    업로드 기준
-  </div>
-  <div style="font-size: 13px; color: #475569; line-height: 1.75;">
-    • CSV / XLSX 지원<br/>
-    • 필수 4개 컬럼만 있으면 시작 가능<br/>
-    • 3개월 이상 데이터 권장
-  </div>
+<div class="side-section-title">업로드 기준</div>
+<div class="side-guide">
+  <b>CSV · XLSX 지원</b>
+  고객ID · 주문번호 · 거래일시 · 매출 4개 컬럼만 있으면 시작할 수 있어요. 이탈 분석에는 3개월 이상 데이터를 권장합니다.
 </div>
             """,
             unsafe_allow_html=True,
@@ -341,7 +195,7 @@ def _check_short_period_warning(df: pd.DataFrame):
         _clear_short_period_state()
         return
 
-    dates = pd.to_datetime(df[date_col], errors="coerce").dropna()
+    dates = pd.to_datetime(df[date_col], errors="coerce", format="mixed").dropna()
     if dates.empty:
         _clear_short_period_state()
         return
@@ -349,8 +203,8 @@ def _check_short_period_warning(df: pd.DataFrame):
     span_days = int((dates.max() - dates.min()).days)
     if span_days < 90:
         message = (
-            f"⚠️ 업로드한 데이터 기간이 약 {span_days}일입니다. "
-            "3개월 미만 데이터는 재구매 주기 및 이탈 분석 품질이 낮아질 수 있습니다."
+            f"업로드한 데이터 기간이 약 {span_days}일입니다. "
+            "3개월 미만이면 재구매 주기와 이탈 분석 결과의 신뢰도가 낮아질 수 있어요."
         )
         _set_short_period_state(span_days, message)
     else:
@@ -360,9 +214,9 @@ def _check_short_period_warning(df: pd.DataFrame):
 def _render_upload_header():
     st.markdown(
         """
-<div class="upload-card-kicker">UPLOAD WORKSPACE</div>
-<div class="upload-card-title">데이터 업로드 후 바로 분석을 시작하세요</div>
-<div class="upload-card-desc">CSV 또는 XLSX 파일을 넣으면 컬럼 매핑, 품질 점검, 리포트 순서로 자연스럽게 이어집니다.</div>
+<div class="card-tag">시작하기</div>
+<div class="card-title">거래 데이터 업로드</div>
+<div class="card-desc">CSV 또는 XLSX 파일을 올리면 컬럼 매핑 → 품질 점검 → 리포트 순서로 진행됩니다.</div>
         """,
         unsafe_allow_html=True,
     )
@@ -371,9 +225,9 @@ def _render_upload_header():
 def _render_sample_header():
     st.markdown(
         """
-<div class="sample-card-kicker">RECOMMENDED</div>
-<div class="sample-card-title">샘플데이터로 먼저 둘러보기</div>
-<div class="sample-card-desc">샘플데이터를 통해 권장 양식을 확인하고 매핑을 연습할 수 있습니다.</div>
+<div class="card-tag green">데이터가 없다면</div>
+<div class="card-title">샘플 데이터로 체험하기</div>
+<div class="card-desc">권장 양식의 샘플로 전체 흐름을 바로 확인할 수 있어요.</div>
         """,
         unsafe_allow_html=True,
     )
@@ -387,21 +241,11 @@ def load_csv_or_sample_sidebar() -> pd.DataFrame | None:
     sample_csv = get_sample_csv_text(sample_df)
     sample_xlsx = get_sample_excel_bytes(sample_df)
 
-    hero_col, sample_col = st.columns([1.7, 1.0], gap="large")
+    hero_col, sample_col = st.columns([1.6, 1.0], gap="medium")
 
     with hero_col:
-        with stylable_container(key="upload_card", css_styles="""
-        {
-            background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,255,0.98) 100%);
-            border: 1px solid rgba(15,23,42,0.08);
-            border-radius: 24px;
-            padding: 24px 24px 18px 24px;
-            box-shadow: 0 10px 28px rgba(15,23,42,0.05);
-            margin-bottom: 8px;
-        }
-        """):
+        with st.container(border=True, key="upload_card"):
             _render_upload_header()
-            st.markdown('<div class="upload-section-title">파일 업로드</div>', unsafe_allow_html=True)
 
             up = st.file_uploader(
                 "CSV 또는 XLSX 파일 선택",
@@ -410,7 +254,7 @@ def load_csv_or_sample_sidebar() -> pd.DataFrame | None:
                 label_visibility="collapsed",
             )
             st.markdown(
-                '<div class="upload-guideline-banner">⚠️ 재구매 주기와 이탈 분석 품질을 위해 3개월 이상의 데이터 사용을 권장합니다.</div>',
+                '<div class="hint">재구매 주기와 이탈 분석을 위해 3개월 이상의 거래 데이터를 권장합니다.</div>',
                 unsafe_allow_html=True,
             )
 
@@ -423,44 +267,38 @@ def load_csv_or_sample_sidebar() -> pd.DataFrame | None:
                     if st.session_state.get("upload_short_period_warning"):
                         st.warning(st.session_state.get("upload_short_period_message", ""))
 
-                    st.success("업로드가 완료되었습니다. 다음 단계에서 컬럼 매핑을 진행하세요.")
+                    st.success("업로드가 완료되었습니다. 다음 단계에서 컬럼을 매핑합니다.")
                     return df
                 except Exception as e:
                     st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
                     return None
 
     with sample_col:
-        with stylable_container(key="sample_card", css_styles="""
-        {
-            background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,255,0.98) 100%);
-            border: 1px solid rgba(15,23,42,0.08);
-            border-radius: 24px;
-            padding: 24px 24px 18px 24px;
-            box-shadow: 0 10px 28px rgba(15,23,42,0.05);
-            margin-bottom: 8px;
-        }
-        """):
+        with st.container(border=True, key="sample_card"):
             _render_sample_header()
 
-            if st.button("✨ 샘플 데이터로 바로 시작", type="primary", use_container_width=True):
+            if st.button("샘플 데이터로 시작", type="primary", use_container_width=True):
                 st.session_state.data_source = "sample"
                 _check_short_period_warning(sample_df)
-                st.success("샘플 데이터를 불러왔습니다. 다음 단계에서 컬럼 매핑을 진행하세요.")
+                st.success("샘플 데이터를 불러왔습니다. 다음 단계에서 컬럼을 매핑합니다.")
                 return sample_df
 
-            st.download_button(
-                "📥 샘플 CSV 다운로드",
-                data=sample_csv,
-                file_name="sample_data.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-            st.download_button(
-                "📥 샘플 XLSX 다운로드",
-                data=sample_xlsx,
-                file_name="sample_data.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "CSV 받기",
+                    data=sample_csv,
+                    file_name="sample_data.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            with d2:
+                st.download_button(
+                    "XLSX 받기",
+                    data=sample_xlsx,
+                    file_name="sample_data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
 
     return None

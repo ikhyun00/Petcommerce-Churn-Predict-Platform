@@ -23,7 +23,8 @@ def _apply_membership_to_session(username: str):
     status = get_user_membership_status(username)
     st.session_state["user_key"] = username
     st.session_state["pro_paid"] = bool(status.get("is_pro", False))
-    st.session_state["service_mode"] = status.get("service_mode", "free")
+    if not st.session_state.get("mode_chosen") or not status.get("is_pro", False):
+        st.session_state["service_mode"] = status.get("service_mode", "free")
     st.session_state["pro_expires_at"] = status.get("pro_expires_at")
     st.session_state["pro_days_left"] = status.get("days_left", 0)
 
@@ -167,11 +168,10 @@ def login_user(username: str, password: str) -> tuple[bool, str, str | None]:
 
 
 def login_gate():
-    st.markdown("### 로그인")
     username = st.text_input("아이디", key="login_username")
     password = st.text_input("비밀번호", type="password", key="login_password")
 
-    submitted = st.button("로그인 실행", type="primary", use_container_width=True, key="login_submit_btn")
+    submitted = st.button("로그인", type="primary", use_container_width=True, key="login_submit_btn")
 
     if not submitted:
         return False, None, None
@@ -189,12 +189,11 @@ def login_gate():
 
 
 def signup_form():
-    st.markdown("### 회원가입")
     username = st.text_input("아이디", key="signup_username")
     password = st.text_input("비밀번호", type="password", key="signup_password")
     password2 = st.text_input("비밀번호 확인", type="password", key="signup_password2")
 
-    submitted = st.button("회원가입 실행", type="primary", use_container_width=True, key="signup_submit_btn")
+    submitted = st.button("가입하기", type="primary", use_container_width=True, key="signup_submit_btn")
 
     if not submitted:
         return

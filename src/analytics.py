@@ -587,7 +587,7 @@ def compute_rfm_and_risk(df: pd.DataFrame) -> Dict[str, Any]:
         work["refund_amount_calc"] = work["매출"].where(work["매출"] < 0, 0).abs()
 
     total_orders = work["주문번호"].nunique()
-    refund_orders = work.loc[work["is_refund"], "주문번호"].drop_duplicates().nunique()
+    refund_orders = int(work["is_refund"].sum())
 
     if total_orders > 0:
         refund_rate = refund_orders / total_orders

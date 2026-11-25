@@ -31,7 +31,7 @@ MODEL_DIR.mkdir(exist_ok=True)
 
 # 고객 전체 이탈 모델
 # 파일명에 rf/lgbm이 박혀 있던 건 과거 실험 흔적(실제로는 한 번도 RandomForest가 채택된 적
-# 없었고, 6~12개월도 CatBoost로 교체됨)이라 혼동을 막기 위해 알고리즘 중립적인 이름으로 변경.
+# 없었음)이라 혼동을 막기 위해 알고리즘 중립적인 이름으로 변경.
 # 실제 채택 모델명은 아래 CUSTOMER_MODEL_NAME_PATH_* 에 별도로 저장됨.
 CUSTOMER_MODEL_PATH_3_6 = MODEL_DIR / "customer_churn_model_3_6.pkl"
 CUSTOMER_FEATURE_PATH_3_6 = MODEL_DIR / "customer_churn_feature_cols_3_6.pkl"
@@ -43,11 +43,13 @@ CUSTOMER_FEATURE_PATH_6_12 = MODEL_DIR / "customer_churn_feature_cols_6_12.pkl"
 CUSTOMER_THRESHOLD_PATH_6_12 = MODEL_DIR / "customer_churn_threshold_6_12.pkl"
 CUSTOMER_MODEL_NAME_PATH_6_12 = MODEL_DIR / "customer_churn_model_name_6_12.pkl"
 
-# 카테고리 이탈 모델
-CATEGORY_MODEL_PATH = MODEL_DIR / "category_churn_lgbm.pkl"
-CATEGORY_FEATURE_PATH = MODEL_DIR / "category_churn_feature_cols.pkl"
-CATEGORY_THRESHOLD_PATH = MODEL_DIR / "category_churn_threshold.pkl"
-CATEGORY_RULE_CATS_PATH = MODEL_DIR / "category_churn_rule_cats.pkl"
+# 고객-카테고리 이탈 모델 (스냅샷 기반 단일 LightGBM, score_customer_categories 전용)
+# 주의: models/category_churn_*.pkl 은 대시보드(analytics.compute_category_churn)가 쓰는
+#       카테고리별 모델 묶음(dict)이라 형식이 다르다. 덮어쓰지 않도록 파일명을 분리한다.
+CATEGORY_MODEL_PATH = MODEL_DIR / "customer_category_churn_lgbm.pkl"
+CATEGORY_FEATURE_PATH = MODEL_DIR / "customer_category_churn_feature_cols.pkl"
+CATEGORY_THRESHOLD_PATH = MODEL_DIR / "customer_category_churn_threshold.pkl"
+CATEGORY_RULE_CATS_PATH = MODEL_DIR / "customer_category_churn_usable_cats.pkl"
 
 
 # =========================================================
@@ -145,6 +147,7 @@ def build_metrics_frame(
         "recall": np.nan,
         "precision_at_10pct": precision_at_top_k(y_true, prob, 0.10),
         "precision_at_20pct": precision_at_top_k(y_true, prob, 0.20),
+        "precision_at_30pct": precision_at_top_k(y_true, prob, 0.30),
         "churn_rate": float(np.mean(y_true)) if len(y_true) > 0 else np.nan,
         "threshold": float(threshold),
         "n": int(len(y_true)),
@@ -157,6 +160,8 @@ def build_metrics_frame(
     metrics["f1"] = f1_score(y_true, pred, zero_division=0)
     metrics["precision"] = precision_score(y_true, pred, zero_division=0)
     metrics["recall"] = recall_score(y_true, pred, zero_division=0)
+    if metrics["churn_rate"]:
+        metrics["lift"] = metrics["precision"] / metrics["churn_rate"]
     return metrics
 
 
@@ -183,6 +188,48 @@ def pick_threshold_on_validation(
 
     best = th_df.sort_values(["f1", "precision"], ascending=False).iloc[0]
     return float(best["threshold"]), th_df
+
+
+# "이탈 예측"으로 표시할 비율. 위험 등급 Critical(상위 10%) + High(10~30%)와 같은 범위.
+# F1 최대 임계값은 이탈률이 높은 데이터에서 0.2~0.3대로 내려가 고객 대부분을 이탈로
+# 찍었다(재현율 0.95, 정밀도 ≈ 이탈률). 업로드 데이터마다 이탈률·확률 분포가 다르므로
+# 고정 확률 대신 "이 데이터 안에서 상위 K%"를 기준으로 쓴다.
+TOP_K_RATE = 0.30
+
+
+def topk_pred(prob: np.ndarray, k: float = TOP_K_RATE) -> np.ndarray:
+    """확률 상위 k 비율을 1로 표시한다 (동점은 순위 평균 기준)."""
+    prob = np.asarray(prob, dtype=float)
+    if len(prob) == 0:
+        return prob.astype(int)
+    pct = pd.Series(prob).rank(pct=True, method="average").to_numpy()
+    return (pct > 1 - k).astype(int)
+
+
+def pick_topk_threshold(prob: np.ndarray, k: float = TOP_K_RATE) -> Tuple[float, pd.DataFrame]:
+    """검증 구간 확률의 상위 k 경계값. 참고·표본 부족 시 폴백용으로 저장한다."""
+    prob = np.asarray(prob, dtype=float)
+    th = float(np.quantile(prob, 1 - k)) if len(prob) else 0.5
+    return th, pd.DataFrame({"top_k_rate": [k], "threshold": [th]})
+
+
+def _max_label_window(horizon_days: int, personalized: bool, max_personal_horizon: int) -> int:
+    """라벨을 만들 때 스냅샷 이후로 필요한 최대 관측 기간(일)."""
+    return int(max(horizon_days, max_personal_horizon) if personalized else horizon_days)
+
+
+def _purge_overlapping_rows(df: pd.DataFrame, idx: pd.Index, cutoff: pd.Timestamp) -> pd.Index:
+    """라벨 관측 창(스냅샷 ~ 스냅샷 + 적용 관측 기간)이 cutoff 이후까지 이어지는 행을 뺀다.
+
+    학습 행의 라벨이 검증·테스트 시점 이후의 구매로 만들어지면, 평가 기간의 정보가 학습에 섞인다
+    (시계열 교차검증의 purging). 관측 기간 컬럼이 없으면 그대로 돌려준다.
+    """
+    horizon_col = next((c for c in ["applied_horizon_days", "cat_applied_horizon_days"] if c in df.columns), None)
+    if horizon_col is None or len(idx) == 0:
+        return idx
+    sub = df.loc[idx]
+    label_end = sub["snapshot_date"] + pd.to_timedelta(sub[horizon_col], unit="D")
+    return sub.index[label_end <= cutoff]
 
 
 def _fill_numeric_na(df: pd.DataFrame) -> pd.DataFrame:
@@ -600,7 +647,11 @@ def make_customer_rolling_dataset(
     verbose: bool = True,
 ) -> pd.DataFrame:
     max_dt = df["거래일시"].max()
-    latest_snapshot = max_dt - pd.Timedelta(days=horizon_days)
+    # 라벨 관측 창이 데이터 끝을 넘지 않도록 '데이터 끝 - 최대 관측 기간'을 가장 최근 스냅샷으로 둔다.
+    # (이전에는 데이터 끝 - horizon_days(60)였는데 개인화 관측 기간은 최대 90일이라,
+    #  마지막 스냅샷 고객 대부분이 아직 관측되지 않은 기간 때문에 '이탈'로 잘못 라벨됐다.)
+    label_window = _max_label_window(horizon_days, personalized_label, max_personal_horizon)
+    latest_snapshot = max_dt - pd.Timedelta(days=label_window)
     snapshots = [latest_snapshot - pd.Timedelta(days=step_days * i) for i in range(n_snapshots)]
     snapshots = sorted(snapshots)
 
@@ -903,7 +954,8 @@ def make_category_rolling_dataset(
     verbose: bool = True,
 ) -> Tuple[pd.DataFrame, List[str]]:
     max_dt = df["거래일시"].max()
-    latest_snapshot = max_dt - pd.Timedelta(days=horizon_days)
+    label_window = _max_label_window(horizon_days, personalized_label, max_personal_horizon)
+    latest_snapshot = max_dt - pd.Timedelta(days=label_window)
     snapshots = [latest_snapshot - pd.Timedelta(days=step_days * i) for i in range(n_snapshots)]
     snapshots = sorted(snapshots)
 
@@ -1023,6 +1075,10 @@ CATEGORY_FEATURES = [
 ]
 
 
+# 3~6개월·6개월 이상 피처의 합집합. 이력 90일 이상 고객 전체로 학습할 때 사용한다.
+SIMPLE_FEATURES_ALL = list(dict.fromkeys(SIMPLE_FEATURES_6_12M + SIMPLE_FEATURES_3_6M))
+
+
 def prepare_simple_X_y(df: pd.DataFrame, feature_set: str = "6_12m"):
     df = df.copy()
     y = df["churn"].astype(int).copy()
@@ -1031,8 +1087,10 @@ def prepare_simple_X_y(df: pd.DataFrame, feature_set: str = "6_12m"):
         candidate_cols = SIMPLE_FEATURES_3_6M
     elif feature_set == "6_12m":
         candidate_cols = SIMPLE_FEATURES_6_12M
+    elif feature_set == "all":
+        candidate_cols = SIMPLE_FEATURES_ALL
     else:
-        raise ValueError("feature_set must be '3_6m' or '6_12m'")
+        raise ValueError("feature_set must be '3_6m', '6_12m' or 'all'")
 
     feature_cols = [c for c in candidate_cols if c in df.columns]
     X = df[feature_cols].copy()
@@ -1137,12 +1195,12 @@ def get_candidate_models() -> Dict[str, object]:
 
 def get_customer_model_3_6():
     models = get_candidate_models()
-    return models.get("xgboost", models["logistic"])
+    return models["logistic"]
 
 
 def get_customer_model_6_12():
     models = get_candidate_models()
-    return models["logistic"]
+    return models.get("xgboost", models["logistic"])
 
 
 def fit_one_model_with_validation(model_name, model, X_train, y_train, X_valid, y_valid):
@@ -1177,7 +1235,7 @@ def fit_one_model_with_validation(model_name, model, X_train, y_train, X_valid, 
         model.fit(X_train, y_train)
 
     valid_prob = model.predict_proba(X_valid)[:, 1]
-    best_th, th_df = pick_threshold_on_validation(y_valid, valid_prob)
+    best_th, th_df = pick_topk_threshold(valid_prob)
     return model, valid_prob, best_th, th_df
 
 
@@ -1195,6 +1253,7 @@ def get_category_model():
             colsample_bytree=0.8,
             random_state=42,
             n_jobs=-1,
+            verbose=-1,
         )
     except Exception:
         return RandomForestClassifier(
@@ -1217,7 +1276,13 @@ def fit_final_single_model(
     model_df: pd.DataFrame,
     model_name: str,
     feature_set: str = "6_12m",
+    eval_segment: Optional[str] = None,
 ) -> Dict:
+    """시간 순 분할(학습 / 검증 1개 시점 / 테스트 1개 시점)로 학습한다.
+
+    eval_segment를 주면 학습은 전달된 전체 행으로 하고, 임계값 선택(검증)과 성능 측정(테스트)은
+    해당 history_segment 고객에게만 한다. 예측 때 이 모델이 그 구간 고객에게만 쓰이기 때문이다.
+    """
     df = model_df.copy().sort_values(["snapshot_date", "고객ID"]).reset_index(drop=True)
 
     X, y, feature_cols = prepare_simple_X_y(df, feature_set=feature_set)
@@ -1232,6 +1297,16 @@ def fit_final_single_model(
     train_idx = df.index[df["snapshot_date"].isin(train_snaps)]
     valid_idx = df.index[df["snapshot_date"].isin(valid_snaps)]
     test_idx = df.index[df["snapshot_date"].isin(test_snaps)]
+    # 라벨 관측 창이 검증 시점을 넘는 학습 행은 제외 (학습 라벨에 검증·테스트 기간 구매가 섞이지 않게)
+    n_train_before = len(train_idx)
+    train_idx = _purge_overlapping_rows(df, train_idx, pd.Timestamp(valid_snaps[0]))
+    n_purged = n_train_before - len(train_idx)
+    if eval_segment is not None:
+        seg_mask = df["history_segment"] == eval_segment
+        valid_idx = valid_idx[seg_mask.loc[valid_idx].values]
+        test_idx = test_idx[seg_mask.loc[test_idx].values]
+        if len(valid_idx) == 0 or len(test_idx) == 0:
+            raise ValueError(f"{eval_segment} 구간의 검증/테스트 데이터가 부족합니다.")
 
     models = get_candidate_models()
     if model_name not in models:
@@ -1246,13 +1321,15 @@ def fit_final_single_model(
     )
 
     test_prob = fitted_model.predict_proba(X.loc[test_idx])[:, 1]
-    test_pred = (test_prob >= best_th).astype(int)
+    test_pred = topk_pred(test_prob)
     metrics = build_metrics_frame(
         y_true=y.loc[test_idx],
         prob=test_prob,
         threshold=best_th,
         pred=test_pred,
     )
+    metrics["n_train"] = int(len(train_idx))
+    metrics["n_train_purged"] = int(n_purged)
 
     return {
         "model_name": model_name,
@@ -1269,6 +1346,71 @@ def fit_final_single_model(
     }
 
 
+def fit_final_custom_model(
+    model_df: pd.DataFrame,
+    model,
+    feature_cols: List[str],
+    target_col: str,
+    sort_cols: Optional[List[str]] = None,
+) -> Dict:
+    """모델 객체와 피처 목록을 직접 받는 학습 함수 (카테고리 이탈 모델용).
+
+    fit_final_single_model과 같은 시간 순 분할을 쓴다:
+    마지막 스냅샷 = 테스트, 그 직전 스냅샷 = 검증(임계값 선택), 나머지 = 학습.
+    """
+    sort_cols = sort_cols or ["snapshot_date", "고객ID"]
+    sort_cols = [c for c in sort_cols if c in model_df.columns]
+    df = model_df.copy().sort_values(sort_cols).reset_index(drop=True)
+
+    X, y, used_cols = prepare_X_y(df, feature_cols, target_col)
+    snap_list = sorted(df["snapshot_date"].unique())
+    if len(snap_list) < 3:
+        raise ValueError("snapshot 수가 부족합니다.")
+
+    train_snaps = snap_list[:-2]
+    valid_snaps = [snap_list[-2]]
+    test_snaps = [snap_list[-1]]
+
+    train_idx = df.index[df["snapshot_date"].isin(train_snaps)]
+    valid_idx = df.index[df["snapshot_date"].isin(valid_snaps)]
+    test_idx = df.index[df["snapshot_date"].isin(test_snaps)]
+    # 라벨 관측 창이 검증 시점을 넘는 학습 행은 제외 (학습 라벨에 검증·테스트 기간 구매가 섞이지 않게)
+    n_train_before = len(train_idx)
+    train_idx = _purge_overlapping_rows(df, train_idx, pd.Timestamp(valid_snaps[0]))
+    n_purged = n_train_before - len(train_idx)
+
+    if y.loc[train_idx].nunique() < 2:
+        raise ValueError("학습 구간에 이탈/비이탈 중 한 클래스만 있어 학습할 수 없습니다.")
+
+    model.fit(X.loc[train_idx], y.loc[train_idx])
+
+    valid_prob = model.predict_proba(X.loc[valid_idx])[:, 1]
+    best_th, th_df = pick_topk_threshold(valid_prob)
+
+    test_prob = model.predict_proba(X.loc[test_idx])[:, 1]
+    test_pred = topk_pred(test_prob)
+    metrics = build_metrics_frame(
+        y_true=y.loc[test_idx],
+        prob=test_prob,
+        threshold=best_th,
+        pred=test_pred,
+    )
+    metrics["n_train"] = int(len(train_idx))
+    metrics["n_train_purged"] = int(n_purged)
+
+    return {
+        "model": model,
+        "threshold": best_th,
+        "threshold_table": th_df,
+        "feature_cols": used_cols,
+        "metrics": metrics,
+        "test_df": df.loc[test_idx].copy().assign(
+            pred_prob=test_prob,
+            pred_label=test_pred,
+        ),
+    }
+
+
 # =========================================================
 # 고객 전체 이탈 모델 학습
 #
@@ -1276,7 +1418,7 @@ def fit_final_single_model(
 # ------------------------------------------------------------
 # 외부 데이터셋(Kaggle Online Sales)으로 4개 후보(Logistic/LightGBM/XGBoost/CatBoost)를
 # 전부 검증한 결과:
-#   - 6~12개월: 외부 ROC-AUC가 4개 모델 다 0.70~0.73으로 랜덤(0.5)을 뚜렷이 상회 -> 실제
+#   - 6개월 이상: 외부 ROC-AUC가 4개 모델 다 0.70~0.73으로 랜덤(0.5)을 뚜렷이 상회 -> 실제
 #     신호가 있다고 판단. 다만 CatBoost는 walk-forward 지표는 좋았지만 실제 score_customers()
 #     라이브 스코어링(rolling 다중 스냅샷이 아닌 단일 현재 시점 피처)에 적용해보니
 #     feature_importance가 order_count_180d(66%)/avg_gap_days(21%)/category_nunique(12%)
@@ -1332,18 +1474,22 @@ def train_and_save_customer_models(
     )
     rolling_df = add_segment_column(rolling_df)
 
-    rolling_3_6 = rolling_df[rolling_df["history_segment"] == "m3_6"].copy()
-    rolling_6_12 = rolling_df[rolling_df["history_segment"] == "m6_12"].copy()
-
-    if len(rolling_3_6) == 0:
+    # 두 모델 모두 이력 90일 이상 고객 전체로 학습하고(history_days를 피처로 포함),
+    # 임계값·평가는 각 모델이 맡는 구간 고객으로만 한다.
+    # 구간별로 따로 학습하면 6개월 이상 구간은 학습 라벨이 검증 시점과 겹치는 행을 빼고 나면
+    # 학습 행이 수백 개로 줄어 성능이 크게 떨어졌다. 통합 학습은 3~6개월 성능은 그대로,
+    # 6개월 이상 성능은 더 높았다.
+    rolling_pool = rolling_df[rolling_df["history_segment"].isin(["m3_6", "m6_12", "other"])].copy()
+    if (rolling_pool["history_segment"] == "m3_6").sum() == 0:
         raise ValueError("3~6개월 학습 데이터가 부족합니다.")
-    if len(rolling_6_12) == 0:
-        raise ValueError("6~12개월 학습 데이터가 부족합니다.")
+    if (rolling_pool["history_segment"] == "m6_12").sum() == 0:
+        raise ValueError("6개월 이상 학습 데이터가 부족합니다.")
 
     result_3_6 = fit_final_single_model(
-        rolling_3_6,
+        rolling_pool,
         model_name=best_model_name_3_6,
-        feature_set="3_6m",
+        feature_set="all",
+        eval_segment="m3_6",
     )
     joblib.dump(result_3_6["model"], CUSTOMER_MODEL_PATH_3_6)
     joblib.dump(result_3_6["feature_cols"], CUSTOMER_FEATURE_PATH_3_6)
@@ -1351,9 +1497,10 @@ def train_and_save_customer_models(
     joblib.dump(result_3_6["model_name"], CUSTOMER_MODEL_NAME_PATH_3_6)
 
     result_6_12 = fit_final_single_model(
-        rolling_6_12,
+        rolling_pool,
         model_name=best_model_name_6_12,
-        feature_set="6_12m",
+        feature_set="all",
+        eval_segment="m6_12",
     )
     joblib.dump(result_6_12["model"], CUSTOMER_MODEL_PATH_6_12)
     joblib.dump(result_6_12["feature_cols"], CUSTOMER_FEATURE_PATH_6_12)
@@ -1420,11 +1567,12 @@ def train_and_save_category_model(
     if len(rolling_df) == 0:
         raise ValueError("카테고리 학습 데이터가 부족합니다.")
 
-    result = fit_final_single_model(
+    result = fit_final_custom_model(
         rolling_df,
         model=get_category_model(),
         feature_cols=CATEGORY_FEATURES,
         target_col="category_churn",
+        sort_cols=["snapshot_date", "고객ID", "카테고리"],
     )
 
     joblib.dump(result["model"], CATEGORY_MODEL_PATH)
@@ -1461,28 +1609,39 @@ def cold_start_rule_score(df: pd.DataFrame) -> np.ndarray:
     return np.clip(score, 0.01, 0.99)
 
 
-def fit_dual_router_models(
-    rolling_df: pd.DataFrame,
-    model_name_3_6: str = "xgboost",
-    model_name_6_12: str = "logistic",
-) -> Dict:
-    rolling_df = add_segment_column(rolling_df.copy())
+def evaluate_cold_start_rule(
+    df: pd.DataFrame,
+    horizon_days: int = 60,
+    n_snapshots: int = 8,
+    step_days: int = 30,
+    max_history_days: int = 90,
+    verbose: bool = True,
+) -> Dict[str, float]:
+    latest_snapshot = df["거래일시"].max() - pd.Timedelta(days=horizon_days)
+    rows = []
+    for i in range(n_snapshots):
+        snap = latest_snapshot - pd.Timedelta(days=step_days * i)
+        feat = build_customer_features_generalized(df, snap)
+        if feat.empty:
+            continue
+        feat = feat[feat["history_days"] < max_history_days].copy()
+        if feat.empty:
+            continue
+        rows.append(add_customer_churn_target(feat, df, horizon_days=horizon_days, personalized=False))
 
-    df_3_6 = rolling_df[rolling_df["history_segment"] == "m3_6"].copy()
-    df_6_12 = rolling_df[rolling_df["history_segment"] == "m6_12"].copy()
+    if not rows:
+        raise ValueError("이력 90일 미만 고객 평가 데이터가 비어 있습니다.")
 
-    if df_3_6.empty:
-        raise ValueError("3~6개월 학습 데이터가 부족합니다.")
-    if df_6_12.empty:
-        raise ValueError("6~12개월 학습 데이터가 부족합니다.")
+    cold = pd.concat(rows, axis=0, ignore_index=True)
+    score = cold_start_rule_score(cold)
+    metrics = build_metrics_frame(cold["churn"], score, pred=topk_pred(score))
+    metrics["recency_only_roc_auc"] = roc_auc_score(cold["churn"], cold["recency_days"])
+    metrics["n_snapshots"] = int(cold["snapshot_date"].nunique())
 
-    model_3_6 = fit_final_single_model(df_3_6, model_name=model_name_3_6, feature_set="3_6m")
-    model_6_12 = fit_final_single_model(df_6_12, model_name=model_name_6_12, feature_set="6_12m")
-
-    return {
-        "model_3_6": model_3_6,
-        "model_6_12": model_6_12,
-    }
+    if verbose:
+        print(f"[cold-start rule] rows={len(cold):,}, churn_rate={cold['churn'].mean():.4f}, "
+              f"ROC-AUC={metrics['roc_auc']:.4f} (recency only {metrics['recency_only_roc_auc']:.4f})")
+    return metrics
 
 
 _RISK_GRADE_ORDER = {"Low": 0, "Medium": 1, "High": 2, "Critical": 3}
@@ -1579,24 +1738,31 @@ def _load_customer_artifacts():
     if not CUSTOMER_MODEL_PATH_6_12.exists():
         raise FileNotFoundError(f"파일 없음: {CUSTOMER_MODEL_PATH_6_12}")
 
-    model_name_3_6 = "xgboost"
-    model_name_6_12 = "logistic"
+    model_name_3_6 = "logistic"
+    model_name_6_12 = "xgboost"
     if CUSTOMER_MODEL_NAME_PATH_3_6.exists():
         model_name_3_6 = str(joblib.load(CUSTOMER_MODEL_NAME_PATH_3_6))
     if CUSTOMER_MODEL_NAME_PATH_6_12.exists():
         model_name_6_12 = str(joblib.load(CUSTOMER_MODEL_NAME_PATH_6_12))
 
+    feature_cols_3_6 = joblib.load(CUSTOMER_FEATURE_PATH_3_6)
+    feature_cols_6_12 = joblib.load(CUSTOMER_FEATURE_PATH_6_12)
+
+    def _infer_feature_set(cols, own_set, own_list):
+        # 저장된 피처 목록이 구간 전용 목록을 벗어나면 통합(all) 피처로 학습된 모델이다.
+        return own_set if set(cols) <= set(own_list) else "all"
+
     return {
         "model_3_6": joblib.load(CUSTOMER_MODEL_PATH_3_6),
-        "feature_cols_3_6": joblib.load(CUSTOMER_FEATURE_PATH_3_6),
+        "feature_cols_3_6": feature_cols_3_6,
         "threshold_3_6": float(joblib.load(CUSTOMER_THRESHOLD_PATH_3_6)),
         "model_name_3_6": model_name_3_6,
-        "feature_set_3_6": "3_6m",
+        "feature_set_3_6": _infer_feature_set(feature_cols_3_6, "3_6m", SIMPLE_FEATURES_3_6M),
         "model_6_12": joblib.load(CUSTOMER_MODEL_PATH_6_12),
-        "feature_cols_6_12": joblib.load(CUSTOMER_FEATURE_PATH_6_12),
+        "feature_cols_6_12": feature_cols_6_12,
         "threshold_6_12": float(joblib.load(CUSTOMER_THRESHOLD_PATH_6_12)),
         "model_name_6_12": model_name_6_12,
-        "feature_set_6_12": "6_12m",
+        "feature_set_6_12": _infer_feature_set(feature_cols_6_12, "6_12m", SIMPLE_FEATURES_6_12M),
     }
 
 
@@ -1626,7 +1792,10 @@ def score_customers(
     router_key = get_router_key_by_data_months(data_months)
     reliability = get_data_reliability(data_months)
 
-    latest_snapshot = df["거래일시"].max() - pd.Timedelta(days=horizon_days)
+    # 예측은 '지금' 기준이므로 업로드 데이터의 마지막 거래일을 기준 시점으로 쓴다.
+    # (이전에는 마지막 거래일 - 60일이라 최근 60일 거래가 예측에 반영되지 않았다.
+    #  horizon_days는 학습 때 라벨을 만드는 데만 필요하고 예측에는 쓰이지 않는다.)
+    latest_snapshot = df["거래일시"].max()
     feat = build_customer_features_generalized(
         df,
         snapshot_date=latest_snapshot,
@@ -1638,36 +1807,51 @@ def score_customers(
     feat = add_segment_column(feat)
     display_df = feat.copy()
     display_df["data_months"] = data_months
-    display_df["router_key"] = router_key
+    display_df["data_router_key"] = router_key
     display_df["reliability"] = reliability
 
-    if router_key == "not_enough_data":
-        prob = cold_start_rule_score(display_df)
-        pred = (prob >= 0.45).astype(int)
-        model_used = "cold_rule"
-        threshold = 0.45
-    else:
+    # 고객별 이력 구간(history_segment)으로 모델을 고른다.
+    # 학습 때 구간별로 모델을 나눴으므로, 예측도 같은 기준이어야 한다.
+    # (이전에는 업로드 데이터 전체 기간 하나로 모델을 골라, 12개월 데이터면
+    #  이력 1~4개월 고객까지 전원 6개월 이상 모델로 예측되는 train/serve 불일치가 있었다.)
+    #   cold(90일 미만) -> 규칙 점수 / m3_6 -> 3~6개월 모델 / m6_12, other(1년 초과) -> 6개월 이상 모델
+    segment_to_route = {
+        "cold": "not_enough_data",
+        "m3_6": "model_3_6",
+        "m6_12": "model_6_12",
+        "other": "model_6_12",
+    }
+    display_df["router_key"] = display_df["history_segment"].map(segment_to_route).fillna("model_6_12")
+
+    prob = pd.Series(np.nan, index=display_df.index, dtype=float)
+    threshold = pd.Series(np.nan, index=display_df.index, dtype=float)
+    model_used = pd.Series("", index=display_df.index, dtype=object)
+
+    cold_mask = display_df["router_key"] == "not_enough_data"
+    if cold_mask.any():
+        prob[cold_mask] = cold_start_rule_score(display_df.loc[cold_mask])
+        threshold[cold_mask] = 0.45
+        model_used[cold_mask] = "cold_rule"
+
+    if (~cold_mask).any():
         artifacts = _load_customer_artifacts()
-        if router_key == "model_3_6":
-            X, _, _ = prepare_simple_X_y(display_df.assign(churn=0), feature_set=artifacts["feature_set_3_6"])
-            X = align_columns(X, artifacts["feature_cols_3_6"])
-            prob = artifacts["model_3_6"].predict_proba(X)[:, 1]
-            threshold = artifacts["threshold_3_6"]
-            pred = (prob >= threshold).astype(int)
-            model_used = f"3_6_{artifacts['model_name_3_6']}"
-        else:
-            X, _, _ = prepare_simple_X_y(display_df.assign(churn=0), feature_set=artifacts["feature_set_6_12"])
-            X = align_columns(X, artifacts["feature_cols_6_12"])
-            prob = artifacts["model_6_12"].predict_proba(X)[:, 1]
-            threshold = artifacts["threshold_6_12"]
-            pred = (prob >= threshold).astype(int)
-            model_used = f"6_12_{artifacts['model_name_6_12']}"
+        for route, key in [("model_3_6", "3_6"), ("model_6_12", "6_12")]:
+            mask = display_df["router_key"] == route
+            if not mask.any():
+                continue
+            X, _, _ = prepare_simple_X_y(
+                display_df.loc[mask].assign(churn=0),
+                feature_set=artifacts[f"feature_set_{key}"],
+            )
+            X = align_columns(X, artifacts[f"feature_cols_{key}"])
+            prob[mask] = artifacts[f"model_{key}"].predict_proba(X)[:, 1]
+            threshold[mask] = artifacts[f"threshold_{key}"]
+            model_used[mask] = f"{key}_{artifacts[f'model_name_{key}']}"
 
     display_df["churn_prob"] = prob
-    display_df["pred_label"] = pred
     display_df["model_used"] = model_used
     display_df["threshold_used"] = threshold
-    display_df["risk_percentile"] = display_df["churn_prob"].rank(pct=True)
+    display_df["risk_percentile"] = display_df.groupby("router_key")["churn_prob"].rank(pct=True)
 
     def risk_group(pct: float) -> str:
         if pd.isna(pct):
@@ -1680,7 +1864,12 @@ def score_customers(
 
     display_df["risk_group"] = display_df["risk_percentile"].apply(risk_group)
     display_df["risk_grade"] = compute_risk_grade(display_df)
-    display_df["model_risk"] = display_df["churn_prob"].apply(lambda x: get_model_risk_label(x, router_key))
+    # 이탈 예측 = 위험 등급 Critical·High (데이터 안 상위 30%, 확률 0.30 미만 제외).
+    # threshold_used는 학습 때 검증 구간 상위 30% 경계값으로 참고용이다.
+    display_df["pred_label"] = display_df["risk_grade"].isin(["Critical", "High"]).astype(int)
+    display_df["model_risk"] = [
+        get_model_risk_label(p, rk) for p, rk in zip(display_df["churn_prob"], display_df["router_key"])
+    ]
     return display_df.sort_values("churn_prob", ascending=False).reset_index(drop=True)
 
 
@@ -1709,7 +1898,7 @@ def score_customer_categories(
     X = align_columns(feat, artifacts["feature_cols"])
     prob = artifacts["model"].predict_proba(X)[:, 1]
     threshold = artifacts["threshold"]
-    pred = (prob >= threshold).astype(int)
+    pred = topk_pred(prob) if len(prob) >= 50 else (prob >= threshold).astype(int)
 
     feat["category_churn_prob"] = prob
     feat["category_pred_label"] = pred
@@ -1751,12 +1940,19 @@ def train_all_models(
         verbose=verbose,
     )
 
+    raw = pd.read_csv(input_csv_path)
+    cold_start_metrics = evaluate_cold_start_rule(
+        preprocess_pet_data(raw, column_mapping=column_mapping),
+        verbose=verbose,
+    )
+
     return {
         "customer_model_3_6_name": customer_result["model_3_6_name"],
         "customer_model_6_12_name": customer_result["model_6_12_name"],
         "customer_model_3_6_metrics": customer_result["model_3_6_metrics"],
         "customer_model_6_12_metrics": customer_result["model_6_12_metrics"],
         "category_model_metrics": category_result["category_model_metrics"],
+        "cold_start_rule_metrics": cold_start_metrics,
     }
 
 

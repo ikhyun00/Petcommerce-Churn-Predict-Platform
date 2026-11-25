@@ -193,7 +193,7 @@ def activate_pro_membership(
     payer_name: str,
     email: str,
     plan: str = "pro_monthly",
-    amount: float = 29000.0,
+    amount: float = 4900.0,
     duration_days: int = 30,
 ) -> dict:
     if not username:

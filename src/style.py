@@ -1,15 +1,18 @@
+import html
+
 import streamlit as st
 
 
-TOPBAR_H = 88
+TOPBAR_H = 60
 
 
 def apply_style():
     css = f"""
     <style>
+    @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css");
+
     :root {{
       --topbar-h: {TOPBAR_H}px;
-      --sidebar-top-gap: 16px;
     }}
 
     html {{
@@ -17,17 +20,14 @@ def apply_style():
     }}
 
     header[data-testid="stHeader"] {{
-      visibility: hidden !important;
+      background: transparent !important;
       height: 0 !important;
     }}
 
-    header[data-testid="stHeader"] [data-testid*="Sidebar"],
-    header[data-testid="stHeader"] button[aria-label*="sidebar"],
-    header[data-testid="stHeader"] button[title*="sidebar"],
-    header[data-testid="stHeader"] button[kind="headerNoPadding"]{{
-      visibility: visible !important;
-      opacity: 1 !important;
-      pointer-events: auto !important;
+    header[data-testid="stHeader"] [data-testid="stToolbar"],
+    header[data-testid="stHeader"] [data-testid="stDecoration"],
+    div[data-testid="stDecoration"] {{
+      display: none !important;
     }}
 
     footer {{
@@ -38,35 +38,40 @@ def apply_style():
       overflow-x: clip !important;
     }}
 
-    div[data-testid="stAppViewContainer"] .main .block-container{{
-      padding-top: calc(var(--topbar-h) + 42px) !important;
-      padding-bottom: 64px !important;
-      max-width: 1400px !important;
-      margin-left: auto !important;
-      margin-right: auto !important;
-      padding-left: 1.85rem !important;
-      padding-right: 1.85rem !important;
+    div[data-testid="stMainBlockContainer"],
+    div[data-testid="stAppViewContainer"] .main .block-container {{
+      padding-top: calc(var(--topbar-h) + 28px) !important;
+      padding-bottom: 72px !important;
+      max-width: 1280px !important;
+      padding-left: 2.5rem !important;
+      padding-right: 2.5rem !important;
     }}
 
-    section[data-testid="stSidebar"]{{
+    section[data-testid="stSidebar"] {{
       top: var(--topbar-h) !important;
       height: calc(100vh - var(--topbar-h)) !important;
-      background: linear-gradient(180deg, #F8FAFD 0%, #F3F6FB 100%) !important;
-      border-right: 1px solid rgba(15,23,42,0.06) !important;
+      border-right: 1px solid var(--line) !important;
+      box-shadow: none !important;
     }}
 
-    section[data-testid="stSidebar"] > div{{
-      padding-top: var(--sidebar-top-gap) !important;
-      height: 100% !important;
-      overflow-y: auto !important;
-      overflow-x: hidden !important;
+    section[data-testid="stSidebar"] > div {{
+      padding-top: 8px !important;
     }}
 
-    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] > div{{
-      gap: 0.50rem !important;
+    section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {{
+      height: 28px !important;
+      padding-top: 4px !important;
     }}
 
-    #top-hero {{
+    [data-testid="stExpandSidebarButton"],
+    [data-testid="stSidebarCollapsedControl"] {{
+      position: fixed !important;
+      top: calc(var(--topbar-h) + 12px) !important;
+      left: 12px !important;
+      z-index: 10001 !important;
+    }}
+
+    #top-bar {{
       position: fixed;
       top: 0;
       left: 0;
@@ -75,231 +80,103 @@ def apply_style():
       z-index: 9999;
       display: flex;
       align-items: center;
-      pointer-events: none;
-      background:
-        radial-gradient(circle at 10% 12%, rgba(255,255,255,0.14), transparent 18%),
-        radial-gradient(circle at 90% 18%, rgba(255,255,255,0.12), transparent 16%),
-        linear-gradient(135deg, #4338CA 0%, #6366F1 45%, #0EA5E9 100%);
-      box-shadow: 0 16px 40px rgba(67,56,202,0.20);
-      border-bottom: 1px solid rgba(255,255,255,0.12);
-      backdrop-filter: blur(16px);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: saturate(180%) blur(12px);
+      border-bottom: 1px solid var(--line);
     }}
 
-    #top-hero .inner {{
+    #top-bar .inner {{
       width: 100%;
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 0 1.85rem;
-      color: white;
+      padding: 0 24px;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 18px;
-      pointer-events: auto;
+      gap: 12px;
     }}
 
-    #top-hero .brand-wrap {{
-      display:flex;
-      flex-direction:column;
-      justify-content:center;
-      gap:4px;
-      min-width:0;
-    }}
-
-    #top-hero .eyebrow {{
-      display:inline-flex;
-      width:fit-content;
-      align-items:center;
-      gap:8px;
-      padding:6px 10px;
-      border-radius:999px;
-      background:rgba(255,255,255,0.12);
-      border:1px solid rgba(255,255,255,0.16);
-      font-size:11px;
-      font-weight:800;
-      letter-spacing:0.08em;
-      text-transform:uppercase;
-      white-space:nowrap;
-    }}
-
-    #top-hero .title {{
-      font-size:26px;
-      font-weight:900;
-      line-height: 1.05;
-      margin: 0;
+    #top-bar .logo {{
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: var(--primary);
       color: #fff;
-      letter-spacing:-0.03em;
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
+      display: grid;
+      place-items: center;
+      font-size: 15px;
+      font-weight: 800;
+      flex-shrink: 0;
     }}
 
-    #top-hero .sub {{
-      font-size: 13px;
-      font-weight: 600;
-      color: rgba(255,255,255,0.88);
-      white-space:nowrap;
-      overflow:hidden;
-      text-overflow:ellipsis;
-    }}
-
-    #top-hero .hero-right {{
-      display:flex;
-      align-items:center;
-      gap:10px;
-      flex-shrink:0;
-    }}
-
-    #top-hero .hero-pill {{
-      display:inline-flex;
-      align-items:center;
-      gap:8px;
-      padding:9px 12px;
-      border-radius:999px;
-      background:rgba(255,255,255,0.12);
-      border:1px solid rgba(255,255,255,0.16);
-      color:#fff;
-      font-size:12px;
-      font-weight:700;
-      white-space:nowrap;
-    }}
-
-    .card {{
-      background: #ffffff;
-      border-radius: 22px;
-      padding: 24px;
-      box-shadow: 0 12px 28px rgba(0,0,0,0.06);
-      border: 1px solid rgba(15,23,42,0.07);
-    }}
-
-    .card-muted {{
-      background: linear-gradient(145deg, rgba(79,70,229,0.08), rgba(14,165,233,0.06));
-      border: 1px solid rgba(79,70,229,0.14);
-      border-radius: 18px;
-      padding: 15px 16px;
-    }}
-
-    .label{{
-      font-size:12px;
-      font-weight:800;
-      letter-spacing:0.08em;
-      text-transform:uppercase;
-      color:#475569;
-      margin-bottom:8px;
-    }}
-
-    .hr{{
-      height:1px;
-      margin:14px 0;
-      background:rgba(15,23,42,0.10);
-    }}
-
-    [data-testid="stSidebarCollapsedControl"],
-    button[aria-label="Open sidebar"],
-    button[title="Open sidebar"],
-    button[aria-label*="Open sidebar"],
-    button[title*="Open sidebar"]{{
-      position: fixed !important;
-      top: calc(var(--topbar-h) + 14px) !important;
-      left: 14px !important;
-      z-index: 10001 !important;
-      visibility: visible !important;
-      opacity: 1 !important;
-      pointer-events: auto !important;
-    }}
-
-    div[data-testid="stForm"],
-    div[data-testid="stExpander"],
-    .stAlert,
-    div[data-testid="stMetric"]{{
-      border-radius:18px !important;
-    }}
-
-    .stButton > button,
-    .stDownloadButton > button{{
-      border-radius:14px !important;
-      min-height:46px !important;
-      font-weight:800 !important;
-      letter-spacing:-0.01em;
-      border:1px solid rgba(15,23,42,0.08) !important;
-      box-shadow:0 8px 20px rgba(15,23,42,0.05);
-      transition: transform .14s ease, box-shadow .14s ease, border-color .14s ease !important;
-    }}
-
-    .stButton > button:hover,
-    .stDownloadButton > button:hover{{
-      transform: translateY(-1px);
-      box-shadow:0 12px 24px rgba(15,23,42,0.08);
-      border-color:rgba(79,70,229,0.18) !important;
-    }}
-
-    .stTextInput > div > div > input,
-    .stSelectbox > div > div,
-    .stTextArea textarea{{
-      border-radius:14px !important;
-    }}
-
-    .stTabs [data-baseweb="tab-list"]{{
-      gap: 6px;
-      overflow-x: auto;
-      scrollbar-width: none;
-    }}
-
-    .stTabs [data-baseweb="tab"]{{
-      height: 42px;
-      padding: 0 14px;
-      border-radius: 12px 12px 0 0;
+    #top-bar .brand {{
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--ink);
       white-space: nowrap;
     }}
 
-    .stPlotlyChart > div{{
-      border-radius: 18px;
-      overflow: hidden;
+    #top-bar .brand-sub {{
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+      padding-left: 12px;
+      margin-left: 2px;
+      border-left: 1px solid var(--line);
     }}
 
-    .stDataFrame, .stTable{{
-      border-radius:18px !important;
-      overflow:hidden !important;
+    #top-bar .right {{
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }}
 
-    @media (max-width: 1200px){{
-      div[data-testid="stAppViewContainer"] .main .block-container{{
-        padding-left: 1.2rem !important;
-        padding-right: 1.2rem !important;
-      }}
+    #top-bar .plan {{
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--bg-soft);
+      color: var(--ink-2);
+      border: 1px solid var(--line);
     }}
 
-    @media (max-width: 1024px){{
-      :root {{
-        --topbar-h: 76px;
-      }}
-
-      #top-hero .inner{{
-        align-items:center;
-      }}
-
-      #top-hero .hero-right{{
-        display:none;
-      }}
-
-      #top-hero .title{{
-        font-size:22px;
-      }}
-
-      #top-hero .sub{{
-        display:none;
-      }}
-
-      div[data-testid="stAppViewContainer"] .main .block-container{{
-        padding-top: calc(var(--topbar-h) + 28px) !important;
-      }}
+    #top-bar .plan.pro {{
+      background: var(--primary-50);
+      color: var(--primary-700);
+      border-color: var(--primary-100);
     }}
 
-    @media (max-width: 768px){{
-      div[data-testid="stAppViewContainer"] .main .block-container{{
-        padding-left: 0.95rem !important;
-        padding-right: 0.95rem !important;
-        padding-top: calc(var(--topbar-h) + 22px) !important;
+    #top-bar .user {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink-2);
+    }}
+
+    #top-bar .avatar {{
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--bg-soft);
+      border: 1px solid var(--line);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+    }}
+
+    @media (max-width: 1024px) {{
+      #top-bar .brand-sub {{
+        display: none;
+      }}
+
+      div[data-testid="stMainBlockContainer"],
+      div[data-testid="stAppViewContainer"] .main .block-container {{
+        padding-left: 1.25rem !important;
+        padding-right: 1.25rem !important;
       }}
     }}
     </style>
@@ -307,19 +184,24 @@ def apply_style():
     st.markdown(css, unsafe_allow_html=True)
 
 
-def render_top_hero(title: str, subtitle: str):
+def render_top_hero(plan_label: str, user_label: str | None, is_pro: bool = False):
+    plan_cls = "plan pro" if is_pro else "plan"
+    if user_label:
+        safe_user = html.escape(user_label)
+        initial = html.escape(user_label[:1].upper())
+        user_html = f'<div class="user"><div class="avatar">{initial}</div>{safe_user}</div>'
+    else:
+        user_html = '<div class="user">비회원</div>'
     st.markdown(
         f"""
-        <div id="top-hero">
+        <div id="top-bar">
           <div class="inner">
-            <div class="brand-wrap">
-              <div class="eyebrow">AI CRM Intelligence</div>
-              <div class="title">{title}</div>
-              <div class="sub">{subtitle}</div>
-            </div>
-            <div class="hero-right">
-              <div class="hero-pill">실시간 업로드 기반 분석</div>
-              <div class="hero-pill">RFM · Churn · Action Plan</div>
+            <div class="logo">P</div>
+            <div class="brand">Pet Commerce Analytics</div>
+            <div class="brand-sub">고객 이탈 예측 · CRM 대시보드</div>
+            <div class="right">
+              <span class="{plan_cls}">{html.escape(plan_label)}</span>
+              {user_html}
             </div>
           </div>
         </div>

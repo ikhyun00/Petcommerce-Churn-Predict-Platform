@@ -1,2 +1,4 @@
 ﻿users.yaml
 app.db
+
+__pycache__/

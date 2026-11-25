@@ -10,6 +10,9 @@ from .analytics import compute_rfm_and_risk
 from .churn_model import compute_risk_grade
 from .pdf_export import build_report_pdf
 from .report_component import (
+    COLORS,
+    RISK_COLORS,
+    SEQ_SCALE,
     section_header,
     metric_card,
     chart_card,
@@ -87,9 +90,9 @@ def _pack_report_for_storage(result: dict) -> dict:
         "segment_summary": _df_to_records(result.get("segment_summary"), 300),
         "customer_list": _df_to_records(result.get("customer_list"), 500),
         "inventory": _df_to_records(result.get("inventory"), 300),
-        "rfm": _df_to_records(result.get("rfm"), 3000),
+        "rfm": _df_to_records(result.get("rfm"), 50000),
         "churn_summary": result.get("churn_summary", {}),
-        "churn_scored": _df_to_records(result.get("churn_scored"), 500),
+        "churn_scored": _df_to_records(result.get("churn_scored"), 50000),
         "category_churn": _df_to_records(result.get("category_churn"), 1000),
         "refund": {
             "refund_rate": float((result.get("refund", {}) or {}).get("refund_rate", 0.0) or 0.0),
@@ -136,10 +139,7 @@ def _negative_sales_mode_desc(mode: str) -> str:
 def _render_negative_sales_mode_notice(mode: str):
     st.markdown(
         f"""
-        <div class="action-card" style="border-left-color:#7C3AED;">
-          <div class="action-title">음수 매출 처리 방식 · {_negative_sales_mode_label(mode)}</div>
-          <div class="action-body">{_negative_sales_mode_desc(mode)}</div>
-        </div>
+        <div class="hint">{_negative_sales_mode_desc(mode)}</div>
         """,
         unsafe_allow_html=True,
     )
@@ -148,7 +148,7 @@ def _render_negative_sales_mode_notice(mode: str):
 def _build_exec_summary(high_ratio, expected_loss, refund_rate, top_seg, top_cat):
     lines = [
         f"고위험 고객 비율은 {high_ratio:.1f}%로, 단기 리텐션 개입이 필요한 수준입니다.",
-        f"예상 매출 이탈 규모는 {_fmt_currency(expected_loss)} 수준으로 추정됩니다.",
+        f"고위험 고객 기준 예상 이탈 매출은 {_fmt_currency(expected_loss)}입니다.",
     ]
     if refund_rate > 0:
         lines.append(f"환불률은 {refund_rate*100:.1f}%로, 상품/배송/품질 이슈를 병행 점검할 필요가 있습니다.")
@@ -160,71 +160,39 @@ def _build_exec_summary(high_ratio, expected_loss, refund_rate, top_seg, top_cat
 
 
 def _render_saved_runs_sidebar(effective_user_key: str, is_member: bool):
+    if not is_member:
+        return
+    picked = st.session_state.get("view_run_id")
+    if picked is None:
+        return
     with st.sidebar:
-        st.markdown('<div class="side-section-title">📌 내 분석 기록</div>', unsafe_allow_html=True)
-        if not is_member:
-            st.caption("로그인하면 분석 기록을 저장하고 다시 불러올 수 있어요.")
-            return
-
-        runs = list_runs(effective_user_key)
-        if not runs:
-            st.caption("저장된 기록이 없습니다.")
+        st.markdown('<div class="side-section-title">보고 있는 저장 분석</div>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        has_current = st.session_state.get("df_std") is not None
+        if c1.button("현재 분석", key="side_back_current", use_container_width=True, disabled=not has_current):
             st.session_state["view_run_id"] = None
             st.session_state["sidebar_run_pick"] = "현재 분석"
-            return
-
-        rid_list = [r.get("run_id") for r in runs if r.get("run_id") is not None]
-        label_map = {r["run_id"]: _make_run_label(r) for r in runs if r.get("run_id") is not None}
-        options = ["현재 분석"] + rid_list
-        previous_pick = st.session_state.get("sidebar_run_pick", "현재 분석")
-        if previous_pick not in options:
-            previous_pick = "현재 분석"
-            st.session_state["sidebar_run_pick"] = "현재 분석"
-
-        picked = st.selectbox(
-            "저장된 분석 보기",
-            options,
-            index=options.index(previous_pick),
-            format_func=lambda x: "현재 분석" if x == "현재 분석" else label_map.get(x, str(x)),
-        )
-
-        if picked != previous_pick:
-            st.session_state["sidebar_run_pick"] = picked
-            st.session_state["view_run_id"] = None if picked == "현재 분석" else picked
             st.rerun()
-
-        if picked != "현재 분석":
-            c1, c2 = st.columns(2)
-            if c1.button("현재 분석 보기", use_container_width=True):
+        if c2.button("기록 삭제", key="side_delete_run", use_container_width=True):
+            ok = delete_run(effective_user_key, picked)
+            if ok:
                 st.session_state["view_run_id"] = None
                 st.session_state["sidebar_run_pick"] = "현재 분석"
+                if not has_current:
+                    st.session_state["step"] = 0
                 st.rerun()
-            if c2.button("기록 삭제", use_container_width=True):
-                ok = delete_run(effective_user_key, picked)
-                if ok:
-                    st.session_state["view_run_id"] = None
-                    st.session_state["sidebar_run_pick"] = "현재 분석"
-                    st.success("선택한 기록을 삭제했어요.")
-                    st.rerun()
-                st.error("삭제에 실패했습니다.")
+            st.error("삭제하지 못했습니다.")
 
 
 def _save_panel(result: dict, metrics: dict, effective_user_key: str, is_member: bool):
     if not is_member:
-        st.info("로그인하면 현재 분석을 저장하고 나중에 다시 열 수 있습니다.")
+        st.caption("로그인하면 현재 분석을 저장하고 나중에 다시 열거나 비교할 수 있어요.")
         return
 
     default_name = st.session_state.get("draft_run_name", "새 분석")
-    with st.form("save_run_form", border=True):
-        st.markdown("#### 분석 저장")
-        run_name = st.text_input("저장 이름", value=default_name, placeholder="예: 6월 캠페인 이후 고객이탈 분석")
-        c1, c2 = st.columns(2)
-        do_save = c1.form_submit_button("저장", use_container_width=True, type="primary")
-        clear_name = c2.form_submit_button("이름 지우기", use_container_width=True)
-
-    if clear_name:
-        st.session_state["draft_run_name"] = ""
-        st.rerun()
+    with st.form("save_run_form", border=False):
+        run_name = st.text_input("저장 이름", value=default_name, placeholder="예: 2021년 4분기까지")
+        do_save = st.form_submit_button("저장", use_container_width=True, type="primary")
 
     if do_save:
         name = (run_name or "").strip()
@@ -232,11 +200,11 @@ def _save_panel(result: dict, metrics: dict, effective_user_key: str, is_member:
             st.warning("저장 이름을 입력해주세요.")
             return
         packed = _pack_report_for_storage(result)
-        run_id = save_run(effective_user_key, name, metrics, packed)
+        save_run(effective_user_key, name, metrics, packed)
         st.session_state["draft_run_name"] = name
         st.session_state["view_run_id"] = None
         st.session_state["sidebar_run_pick"] = "현재 분석"
-        st.success(f"저장 완료! (run_id={run_id})")
+        st.toast(f"'{name}'(으)로 저장했습니다.")
         st.rerun()
 
 
@@ -252,48 +220,29 @@ def _pdf_controls(
     refund_category: pd.DataFrame,
     inv: pd.DataFrame,
     forecast: dict,
+    refund_rate: float = 0.0,
 ):
-    st.session_state.setdefault("show_pdf_options", False)
     st.session_state.setdefault("report_pdf_bytes", None)
 
-    st.markdown("#### PDF 내보내기")
-    c1, c2 = st.columns([1, 1])
+    st.caption("PDF에 넣을 탭을 고르세요.")
+    section_options = [
+        ("overview", "요약"),
+        ("segment", "세그먼트"),
+        ("category", "카테고리"),
+        ("ml", "ML 이탈예측"),
+        ("refund", "환불"),
+        ("inventory", "재고"),
+    ]
 
-    with c1:
-        if st.button("PDF 준비", use_container_width=True):
-            st.session_state["show_pdf_options"] = True
+    selected_sections = {}
+    cols = st.columns(2)
+    for idx, (key, label) in enumerate(section_options):
+        with cols[idx % 2]:
+            selected_sections[key] = st.checkbox(label, value=True, key=f"pdf_section_{key}")
 
-    with c2:
-        if st.session_state["show_pdf_options"]:
-            if st.button("PDF 옵션 닫기", use_container_width=True):
-                st.session_state["show_pdf_options"] = False
-                st.rerun()
-
-    if st.session_state["show_pdf_options"]:
-        st.info("포함할 탭을 선택한 뒤 PDF 생성 버튼을 눌러주세요.")
-
-        section_options = [
-            ("overview", "Executive Summary"),
-            ("segment", "세그먼트"),
-            ("category", "카테고리"),
-            ("ml", "ML 이탈예측"),
-            ("refund", "환불"),
-            ("inventory", "재고 전략"),
-        ]
-
-        selected_sections = {}
-        cols = st.columns(4)
-
-        for idx, (key, label) in enumerate(section_options):
-            with cols[idx % 4]:
-                selected_sections[key] = st.checkbox(
-                    label,
-                    value=True,
-                    key=f"pdf_section_{key}",
-                )
-
-        if st.button("PDF 생성", type="primary", use_container_width=True):
-            try:
+    if st.button("PDF 만들기", type="primary", use_container_width=True, key="pdf_build_btn"):
+        try:
+            with st.spinner("PDF를 만드는 중입니다..."):
                 pdf_bytes = build_report_pdf(
                     title=pdf_title,
                     user_name=pdf_user_name,
@@ -307,11 +256,12 @@ def _pdf_controls(
                     inventory_df=inv,
                     forecast=forecast,
                     selected_sections=selected_sections,
+                    refund_rate=refund_rate,
+                    negative_sales_mode=_get_negative_sales_mode(),
                 )
-                st.session_state["report_pdf_bytes"] = pdf_bytes
-                st.success("PDF가 준비되었습니다.")
-            except Exception as e:
-                st.error(f"PDF 생성 중 오류가 발생했습니다: {e}")
+            st.session_state["report_pdf_bytes"] = pdf_bytes
+        except Exception as e:
+            st.error(f"PDF 생성 중 오류가 발생했습니다: {e}")
 
     pdf_bytes = st.session_state.get("report_pdf_bytes")
     if pdf_bytes:
@@ -323,6 +273,7 @@ def _pdf_controls(
 
         st.download_button(
             label="PDF 다운로드",
+            type="primary",
             data=pdf_bytes,
             file_name=f"{safe_pdf_name}_report.pdf",
             mime="application/pdf",
@@ -761,47 +712,43 @@ def _comparison_delta_text(current, base, kind: str = "number") -> str:
     return f"{int(round(delta)):+,}"
 
 
-def _comparison_delta_color(delta: float) -> str:
+LOWER_IS_BETTER = {"high_ratio", "avg_risk", "expected_loss", "refund_rate_pct"}
+
+
+def _comparison_delta_color(delta: float, lower_is_better: bool = False) -> str:
+    if lower_is_better:
+        delta = -delta
     if delta > 0:
-        return "#10B981"
+        return "#059669"
     if delta < 0:
-        return "#EF4444"
-    return "#64748B"
+        return "#DC2626"
+    return "#6B7280"
 
 
-def _comparison_delta_bg(delta: float) -> str:
+def _comparison_delta_bg(delta: float, lower_is_better: bool = False) -> str:
+    if lower_is_better:
+        delta = -delta
     if delta > 0:
-        return "linear-gradient(135deg, rgba(16,185,129,0.16), rgba(16,185,129,0.05))"
+        return "#ECFDF5"
     if delta < 0:
-        return "linear-gradient(135deg, rgba(239,68,68,0.16), rgba(239,68,68,0.05))"
-    return "linear-gradient(135deg, rgba(100,116,139,0.14), rgba(100,116,139,0.05))"
+        return "#FEF2F2"
+    return "#F3F4F6"
 
 
-def _render_compare_metric_card(title: str, value: str, delta_text: str, delta_value: float, subtitle: str = ""):
-    accent = _comparison_delta_color(delta_value)
-    bg = _comparison_delta_bg(delta_value)
-    arrow = "▲" if delta_value > 0 else "▼" if delta_value < 0 else "■"
-    subtitle_html = (
-        f'<div style="margin-top:10px;font-size:0.92rem;color:#64748B;font-weight:600;">{subtitle}</div>'
-        if str(subtitle).strip()
-        else ""
-    )
+def _render_compare_metric_card(title: str, value: str, delta_text: str, delta_value: float, subtitle: str = "", lower_is_better: bool = False):
+    accent = _comparison_delta_color(delta_value, lower_is_better)
+    bg = _comparison_delta_bg(delta_value, lower_is_better)
+    arrow = "▲" if delta_value > 0 else "▼" if delta_value < 0 else ""
+    if delta_value == 0:
+        delta_text = "변화 없음"
+    subtitle_html = f'<div class="kpi-foot">{subtitle}</div>' if str(subtitle).strip() else ""
     st.markdown(
         f"""
-        <div style="
-            background:{bg};
-            border:1px solid rgba(148,163,184,0.20);
-            border-left:6px solid {accent};
-            border-radius:22px;
-            padding:20px 22px 18px 22px;
-            min-height:156px;
-            box-shadow:0 10px 30px rgba(15,23,42,0.08);
-        ">
-          <div style="font-size:0.86rem;font-weight:700;color:#475569;letter-spacing:0.01em;">{title}</div>
-          <div style="margin-top:10px;font-size:2.05rem;line-height:1.1;font-weight:900;color:#0F172A;">{value}</div>
-          <div style="margin-top:14px;display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:rgba(255,255,255,0.88);color:{accent};font-size:1.08rem;font-weight:900;">
-            <span style="font-size:1rem;">{arrow}</span>
-            <span>{delta_text}</span>
+        <div class="kpi-shell">
+          <div class="kpi-label">{title}</div>
+          <div class="kpi-value" title="{value}">{value}</div>
+          <div style="margin-top:8px;display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:6px;background:{bg};color:{accent};font-size:13px;font-weight:600;">
+            <span style="font-size:10px;">{arrow}</span><span>{delta_text}</span>
           </div>
           {subtitle_html}
         </div>
@@ -814,13 +761,13 @@ def _build_compare_metric_chart(left: dict, right: dict, metric_key: str, metric
     left_value = float(left.get(metric_key, 0) or 0)
     right_value = float(right.get(metric_key, 0) or 0)
     delta = right_value - left_value
-    target_color = _comparison_delta_color(delta)
+    target_color = _comparison_delta_color(delta, metric_key in LOWER_IS_BETTER)
 
     fig = go.Figure()
     fig.add_bar(
         x=["기준", "대상"],
         y=[left_value, right_value],
-        marker_color=["#CBD5E1", target_color],
+        marker_color=["#D1D5DB", target_color],
         text=[left_value, right_value],
         textposition="outside",
         hovertemplate="구분=%{x}<br>값=%{y:,.1f}<extra></extra>",
@@ -838,49 +785,12 @@ def _build_compare_metric_chart(left: dict, right: dict, metric_key: str, metric
 
     fig.update_layout(
         height=280,
-        margin=dict(l=10, r=10, t=58, b=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(248,250,252,0.85)",
         showlegend=False,
-        title=dict(
-            text=f"{metric_label}<br><sup style='color:{target_color};font-size:13px;'>변화 {delta_text}</sup>",
-            x=0.03,
-            xanchor="left",
-            font=dict(size=16, color="#0F172A"),
-        ),
-        yaxis=dict(title="", gridcolor="rgba(148,163,184,0.18)", zeroline=False),
+        yaxis=dict(title=""),
         xaxis=dict(title=""),
     )
+    fig._delta_text = delta_text
     return fig
-
-
-def _render_compare_section_style():
-    st.markdown(
-        """
-        <style>
-        .compare-panel {
-            background: linear-gradient(180deg, rgba(248,250,252,0.98), rgba(241,245,249,0.92));
-            border: 1px solid rgba(148,163,184,0.20);
-            border-radius: 24px;
-            padding: 18px 20px;
-            box-shadow: 0 12px 28px rgba(15,23,42,0.06);
-            margin-bottom: 12px;
-        }
-        .compare-panel-title {
-            font-size: 1rem;
-            font-weight: 800;
-            color: #0F172A;
-            margin-bottom: 4px;
-        }
-        .compare-panel-subtitle {
-            font-size: 0.92rem;
-            color: #64748B;
-            font-weight: 600;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def _prepare_ml_scored_view(churn_scored: pd.DataFrame) -> pd.DataFrame:
@@ -1172,15 +1082,15 @@ def _prepare_ml_action_counts(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
-    section_header("비교분석", "저장된 분석 2건을 선택해 핵심 성과와 위험도를 한 화면에서 비교합니다.", kicker="COMPARE")
+    section_header("비교 분석", "저장한 분석 두 개를 골라 매출, 고객 수, 위험도 변화를 비교합니다.")
 
     if not is_member:
-        st.info("비교분석은 로그인 후 저장한 분석이 2건 이상 있을 때 사용할 수 있습니다.")
+        st.info("로그인 후 분석을 2개 이상 저장하면 비교할 수 있습니다.")
         return
 
     runs = list_runs(effective_user_key)
     if len(runs) < 2:
-        st.info("비교할 저장 분석이 부족합니다. 분석을 2건 이상 저장하면 비교 탭이 활성화됩니다.")
+        st.info("저장한 분석이 2개 이상 있어야 비교할 수 있습니다. 상단의 '분석 저장'으로 저장해주세요.")
         return
 
     options = [r.get("run_id") for r in runs if r.get("run_id") is not None]
@@ -1199,7 +1109,7 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
     c1, c2 = st.columns(2)
     with c1:
         left_id = st.selectbox(
-            "비교 기준 분석",
+            "기준 분석",
             options,
             index=options.index(default_left),
             format_func=lambda x: label_map.get(x, str(x)),
@@ -1209,7 +1119,7 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
         right_candidates = [rid for rid in options if rid != left_id] or options
         right_default = default_right if default_right in right_candidates else right_candidates[0]
         right_id = st.selectbox(
-            "비교 대상 분석",
+            "비교할 분석",
             right_candidates,
             index=right_candidates.index(right_default),
             format_func=lambda x: label_map.get(x, str(x)),
@@ -1228,22 +1138,15 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
     left = _build_compare_snapshot(left_run)
     right = _build_compare_snapshot(right_run)
 
-    _render_compare_section_style()
-
     st.markdown(
-        f"""
-        <div class="compare-panel">
-          <div class="compare-panel-title">비교 기준</div>
-          <div class="compare-panel-subtitle">좌측 기준: <b>{left['label']}</b> · 우측 대상: <b>{right['label']}</b></div>
-        </div>
-        """,
+        f'<div class="info-banner"><b>{left["label"]}</b>(기준) 대비 <b>{right["label"]}</b>(대상)의 변화입니다.</div>',
         unsafe_allow_html=True,
     )
 
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         _render_compare_metric_card(
-            "매출 비교",
+            "매출",
             _fmt_currency(right["revenue"]),
             _comparison_delta_text(right["revenue"], left["revenue"]),
             right["revenue"] - left["revenue"],
@@ -1251,7 +1154,7 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
         )
     with m2:
         _render_compare_metric_card(
-            "주문수 비교",
+            "주문 수",
             _fmt_int(right["orders"]),
             _comparison_delta_text(right["orders"], left["orders"]),
             right["orders"] - left["orders"],
@@ -1259,7 +1162,7 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
         )
     with m3:
         _render_compare_metric_card(
-            "고객수 비교",
+            "고객 수",
             _fmt_int(right["customers"]),
             _comparison_delta_text(right["customers"], left["customers"]),
             right["customers"] - left["customers"],
@@ -1271,16 +1174,16 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
             f"{right['high_ratio']:.1f}%",
             _comparison_delta_text(right["high_ratio"], left["high_ratio"], kind="percent"),
             right["high_ratio"] - left["high_ratio"],
-
+            lower_is_better=True,
         )
 
     metric_options = {
         "매출": ("revenue", "currency"),
-        "주문수": ("orders", "number"),
-        "고객수": ("customers", "number"),
+        "주문 수": ("orders", "number"),
+        "고객 수": ("customers", "number"),
         "예상 이탈 매출": ("expected_loss", "currency"),
-        "다음달 예상 매출": ("forecast_value", "currency"),
-        "평균 리스크": ("avg_risk", "number"),
+        "다음 달 예상 매출": ("forecast_value", "currency"),
+        "평균 위험 점수": ("avg_risk", "number"),
         "고위험 고객 비율": ("high_ratio", "percent"),
         "환불률": ("refund_rate_pct", "percent"),
     }
@@ -1290,25 +1193,17 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
     chart_left["refund_rate_pct"] = left["refund_rate"] * 100
     chart_right["refund_rate_pct"] = right["refund_rate"] * 100
 
-    st.markdown(
-        """
-        <div class="compare-panel">
-          <div class="compare-panel-title">비교 차트</div>
-          <div class="compare-panel-subtitle">3개 슬롯을 각각 선택해서 보고 싶은 지표를 동시에 비교할 수 있습니다.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    section_header("지표별 비교", "보고 싶은 지표를 최대 3개까지 골라 나란히 비교합니다.")
 
     selector_cols = st.columns(3)
     metric_labels = list(metric_options.keys())
-    default_metrics = ["매출", "주문수", "고위험 고객 비율"]
+    default_metrics = ["매출", "주문 수", "고위험 고객 비율"]
     selected_metrics = []
     for idx, col in enumerate(selector_cols):
         with col:
             selected_metrics.append(
                 st.selectbox(
-                    f"차트 {idx+1}",
+                    f"지표 {idx+1}",
                     metric_labels,
                     index=metric_labels.index(default_metrics[idx]),
                     key=f"compare_chart_metric_{idx+1}",
@@ -1320,7 +1215,7 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
         metric_key, metric_kind = metric_options[metric_name]
         fig = _build_compare_metric_chart(chart_left, chart_right, metric_key, metric_name, metric_kind)
         with chart_cols[idx]:
-            chart_card(metric_name, fig, "기준 대비 대상 분석의 증감을 색상과 수치로 강조합니다.", height=320)
+            chart_card(metric_name, fig, f"기준 대비 {getattr(fig, '_delta_text', '')}", height=280)
 
     summary_lines = []
     revenue_delta = right["revenue"] - left["revenue"]
@@ -1337,9 +1232,9 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
 
     risk_direction = "높아졌습니다" if risk_delta > 0 else "낮아졌습니다" if risk_delta < 0 else "같습니다"
     if risk_delta != 0:
-        summary_lines.append(f"평균 리스크는 기준 대비 {abs(risk_delta):.1f}p {risk_direction}.")
+        summary_lines.append(f"평균 위험 점수는 기준 대비 {abs(risk_delta):.1f}점 {risk_direction}.")
     else:
-        summary_lines.append("평균 리스크는 두 분석이 동일합니다.")
+        summary_lines.append("평균 위험 점수는 두 분석이 같습니다.")
 
     summary_lines.append(f"고위험 고객 비율 변화는 {high_ratio_delta:+.1f}%p입니다.")
     summary_lines.append(f"환불률 변화는 {refund_delta:+.1f}%p입니다.")
@@ -1370,19 +1265,19 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
             "변화": _comparison_delta_text(right["revenue"], left["revenue"]),
         },
         {
-            "항목": "주문수",
+            "항목": "주문 수",
             "기준 분석": _fmt_int(left["orders"]),
             "대상 분석": _fmt_int(right["orders"]),
             "변화": _comparison_delta_text(right["orders"], left["orders"]),
         },
         {
-            "항목": "고객수",
+            "항목": "고객 수",
             "기준 분석": _fmt_int(left["customers"]),
             "대상 분석": _fmt_int(right["customers"]),
             "변화": _comparison_delta_text(right["customers"], left["customers"]),
         },
         {
-            "항목": "평균 리스크",
+            "항목": "평균 위험 점수",
             "기준 분석": f"{left['avg_risk']:.1f}",
             "대상 분석": f"{right['avg_risk']:.1f}",
             "변화": f"{right['avg_risk'] - left['avg_risk']:+.1f}",
@@ -1400,7 +1295,7 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
             "변화": _comparison_delta_text(right["expected_loss"], left["expected_loss"]),
         },
         {
-            "항목": "다음달 예상 매출",
+            "항목": "다음 달 예상 매출",
             "기준 분석": _fmt_currency(left["forecast_value"]),
             "대상 분석": _fmt_currency(right["forecast_value"]),
             "변화": _comparison_delta_text(right["forecast_value"], left["forecast_value"]),
@@ -1424,7 +1319,7 @@ def _render_saved_runs_comparison_tab(effective_user_key: str, is_member: bool):
             "변화": "변경" if left["top_category"] != right["top_category"] else "동일",
         },
     ]
-    table_block(pd.DataFrame(detail_rows), caption="저장 분석 비교표", height=460)
+    table_block(pd.DataFrame(detail_rows), caption="전체 비교표", height=440)
 
 
 def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
@@ -1512,56 +1407,62 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
     elif isinstance(cust_list, pd.DataFrame) and not cust_list.empty and "위험도" in cust_list.columns:
         high_cnt = int(cust_list["위험도"].astype(str).eq("High").sum())
 
-    st.markdown('<div class="page-eyebrow">PRO REPORT</div>', unsafe_allow_html=True)
-    st.markdown('<div class="page-title">펫커머스 재구매 · 이탈 대응 리포트</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="page-subtitle">반려동물 커머스 거래 데이터를 바탕으로 고객 행동, 핵심 카테고리 재구매 주기, 다반려 고객 구조, 카테고리 이탈 위험을 운영 액션 중심으로 정리했습니다.</div>',
-        unsafe_allow_html=True,
-    )
-
-    if showing_saved:
-        saved_label = _make_run_label(saved_run or {})
-        st.info(f"📌 저장된 분석을 보고 있어요: {saved_label}")
-
-    if not showing_saved:
-        _save_panel(result, metrics, effective_user_key, is_member)
-
-    _pdf_controls(
-        "펫커머스 재구매 · 이탈 대응 리포트",
-        st.session_state.get("user_key", "guest"),
-        (saved_run.get("run_name") if showing_saved and saved_run else None) or st.session_state.get("draft_run_name", "현재 분석"),
-        kpi,
-        cat if isinstance(cat, pd.DataFrame) else pd.DataFrame(),
-        seg if isinstance(seg, pd.DataFrame) else pd.DataFrame(),
-        cust_list if isinstance(cust_list, pd.DataFrame) else pd.DataFrame(),
-        churn_scored if isinstance(churn_scored, pd.DataFrame) else pd.DataFrame(),
-        refund_category if isinstance(refund_category, pd.DataFrame) else pd.DataFrame(),
-        inv if isinstance(inv, pd.DataFrame) else pd.DataFrame(),
-        forecast if isinstance(forecast, dict) else {},
-    )
+    run_label = _make_run_label(saved_run or {}) if showing_saved else (st.session_state.get("draft_run_name") or "현재 분석")
+    head_left, head_right = st.columns([3, 1.4], vertical_alignment="bottom")
+    with head_left:
+        st.markdown(
+            f"""
+            <div class="page-head">
+              <div class="crumb">리포트 · <b>{run_label}</b>{' · 저장된 분석' if showing_saved else ''}</div>
+              <div class="page-title">재구매 · 이탈 대응 리포트</div>
+              <div class="page-subtitle">고객 이탈 위험, 카테고리별 재구매 주기, 환불·재고 포인트를 운영 액션 중심으로 정리했습니다.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with head_right:
+        with st.container(horizontal=True, horizontal_alignment="right", key="report_actions"):
+            if not showing_saved:
+                with st.popover("분석 저장", key="save_popover"):
+                    _save_panel(result, metrics, effective_user_key, is_member)
+            with st.popover("PDF 내보내기", type="primary", key="pdf_popover"):
+                _pdf_controls(
+                    "펫커머스 재구매 · 이탈 대응 리포트",
+                    st.session_state.get("user_key", "guest"),
+                    (saved_run.get("run_name") if showing_saved and saved_run else None) or st.session_state.get("draft_run_name", "현재 분석"),
+                    kpi,
+                    cat if isinstance(cat, pd.DataFrame) else pd.DataFrame(),
+                    seg if isinstance(seg, pd.DataFrame) else pd.DataFrame(),
+                    cust_list if isinstance(cust_list, pd.DataFrame) else pd.DataFrame(),
+                    churn_scored if isinstance(churn_scored, pd.DataFrame) else pd.DataFrame(),
+                    refund_category if isinstance(refund_category, pd.DataFrame) else pd.DataFrame(),
+                    inv if isinstance(inv, pd.DataFrame) else pd.DataFrame(),
+                    forecast if isinstance(forecast, dict) else {},
+                    refund_rate=refund_rate,
+                )
 
     tab_overview, tab_segment, tab_category, tab_ml, tab_refund, tab_inventory, tab_compare = st.tabs([
-        "Executive Summary", "세그먼트", "카테고리", "ML 이탈예측", "환불", "재고", "비교분석"
+        "요약", "세그먼트", "카테고리", "ML 이탈예측", "환불", "재고", "비교 분석"
     ])
 
     with tab_overview:
-        section_header("Executive Summary", "핵심 KPI와 우선 대응 포인트를 먼저 보여주는 경영진 요약 화면입니다.", kicker="OVERVIEW")
+        section_header("한눈에 보는 현황", "핵심 지표와 우선 대응 포인트를 먼저 정리했습니다.")
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             metric_card("고위험 고객 비율", f"{high_ratio:.1f}%", f"고위험 고객 {_fmt_int(high_cnt)}명")
         with c2:
-            metric_card("평균 리스크 스코어", f"{avg_risk:.0f}", "기준 예시: High ≥ 70")
+            metric_card("평균 위험 점수", f"{avg_risk:.0f}점", "100점 만점 · 70점 이상이면 고위험")
         with c3:
-            metric_card("예상 매출 이탈", _fmt_currency(expected_loss), "단기 리텐션 우선 대응 필요")
+            metric_card("예상 이탈 매출", _fmt_currency(expected_loss), "고위험 고객 기준 추정 손실")
         with c4:
-            metric_card("환불률", f"{refund_rate*100:.1f}%", "상품/배송/품질 이슈 점검")
+            metric_card("환불률", f"{refund_rate*100:.1f}%", "상품·배송·품질 이슈 점검 지표")
 
         _render_negative_sales_mode_notice(negative_sales_mode)
-        insight_box("핵심 인사이트", _build_exec_summary(high_ratio, expected_loss, refund_rate, top_seg_name, top_cat_name), tone="info")
+        insight_box("핵심 요약", _build_exec_summary(high_ratio, expected_loss, refund_rate, top_seg_name, top_cat_name), tone="info")
 
         g1, g2 = st.columns([1, 1])
         with g1:
-            chart_card("현재 위험 수준", gauge_card(avg_risk, "평균 리스크", reference=70), "평균 위험 점수를 0~100 기준으로 요약합니다.", height=300)
+            chart_card("평균 위험 점수", gauge_card(avg_risk, "", reference=70), "0~100점 · 빨간 선(70점)을 넘으면 고위험 구간입니다.", height=300)
         with g2:
             if isinstance(cat, pd.DataFrame) and not cat.empty and {"카테고리", "위험"}.issubset(cat.columns):
                 cat_plot = cat.copy()
@@ -1591,17 +1492,15 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                     y="펫카테고리",
                     orientation="h",
                     text="위험",
-                    color="위험",
-                    color_continuous_scale="Blues",
+                    color_discrete_sequence=[COLORS["primary"]],
                     hover_data={"고객수": True, "위험": ":.1f"},
                 )
                 fig.update_layout(
-                    coloraxis_showscale=False,
-                    xaxis_title="위험",
-                    yaxis_title="카테고리",
+                    xaxis_title="평균 위험 점수",
+                    yaxis_title="",
                 )
                 fig.update_traces(texttemplate="%{text:.1f}", textposition="outside")
-                chart_card("핵심 펫카테고리 위험 우선순위", fig, "사료·소모품·건강관리 등 핵심 카테고리부터 우선 관리합니다.")
+                chart_card("카테고리별 위험 점수", fig, "점수가 높은 카테고리부터 우선 관리합니다.", height=300)
             else:
                 st.info("카테고리 위험도 데이터가 없습니다.")
 
@@ -1611,45 +1510,48 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                 x="Recency",
                 y="Monetary",
                 color="위험도",
-                opacity=0.75,
+                opacity=0.7,
+                color_discrete_map={"High": COLORS["danger"], "Medium": COLORS["warning"], "Low": "#A5B4FC"},
+                category_orders={"위험도": ["High", "Medium", "Low"]},
+                labels={"Recency": "마지막 구매 후 경과일", "Monetary": "누적 구매금액", "위험도": "위험도"},
             )
-            chart_card("고객 가치 vs 최근성 분포", fig, "오른쪽 위 고객은 최근 구매가 오래됐지만 가치가 큰 고객으로, 이탈 시 영향이 큽니다.")
+            chart_card("고객 가치와 최근 구매 시점", fig, "오른쪽 위는 구매가 오래 끊겼지만 가치가 큰 고객입니다. 이탈하면 영향이 가장 큽니다.")
 
-        section_header("Recommended Actions", "이 리포트를 보고 바로 실행할 수 있는 액션을 우선순위로 정리했습니다.", kicker="ACTION")
-        action_card("사료/소모품 재구매 방어", "사료·패드·모래 같은 반복소비 카테고리는 재구매주기 기준으로 리마인드와 구독 제안을 먼저 적용하세요.", "Priority 1")
-        action_card("핵심 카테고리 이탈 방지", "전체 이탈보다 '왜 우리 몰에서 사료만 안 사는가'를 먼저 점검해야 합니다. 카테고리별 이탈 위험 고객부터 관리하세요.", "Priority 2")
-        action_card("다반려 고객 교차판매", "강아지·고양이 교차구매 또는 높은 카테고리 다양도를 보이는 고객은 묶음상품과 장바구니 추천에 적합합니다.", "Priority 3")
+        section_header("추천 액션", "리포트를 보고 바로 실행할 수 있는 액션을 우선순위대로 정리했습니다.")
+        action_card("사료/소모품 재구매 방어", "사료·패드·모래 같은 반복 소비 카테고리는 재구매 주기에 맞춰 리마인드와 정기배송 제안을 먼저 적용하세요.", "우선순위 1")
+        action_card("핵심 카테고리 이탈 방지", "고객 전체 이탈보다 '왜 우리 몰에서 사료만 안 사는가'를 먼저 점검하세요. 카테고리별 이탈 위험 고객부터 관리합니다.", "우선순위 2")
+        action_card("다반려 고객 교차판매", "강아지·고양이 상품을 함께 사거나 여러 카테고리를 사는 고객에게 묶음 상품과 장바구니 추천을 제안하세요.", "우선순위 3")
 
     with tab_segment:
-        section_header("세그먼트 분석", "고객군별 규모, 가치, 평균 위험도를 시각적으로 확인합니다.", kicker="SEGMENT")
+        section_header("세그먼트 분석", "RFM 고객군별 규모, 평균 매출, 평균 위험도를 비교합니다.")
         if isinstance(seg, pd.DataFrame) and not seg.empty:
             left, right = st.columns(2)
             with left:
                 if {"세그먼트", "인원"}.issubset(seg.columns):
                     fig = px.pie(seg, names="세그먼트", values="인원", hole=0.58)
                     fig.update_traces(textposition="inside", textinfo="percent+label")
-                    chart_card("세그먼트 구성 비율", fig, "고객군이 어떤 구조로 구성되어 있는지 보여줍니다.")
+                    chart_card("세그먼트 구성", fig, "고객군별 인원 비중입니다.")
             with right:
                 if {"세그먼트", "평균금액"}.issubset(seg.columns):
                     seg_plot = seg.copy()
                     seg_plot["평균금액"] = pd.to_numeric(seg_plot["평균금액"], errors="coerce")
-                    fig = px.bar(seg_plot, x="세그먼트", y="평균금액", text="평균금액", color="평균금액", color_continuous_scale="Blues")
-                    fig.update_layout(coloraxis_showscale=False)
+                    fig = px.bar(seg_plot, x="세그먼트", y="평균금액", text="평균금액", color_discrete_sequence=[COLORS["primary"]])
+                    fig.update_layout(xaxis_title="", yaxis_title="평균 매출")
                     fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-                    chart_card("세그먼트별 평균 매출", fig, "가치가 높은 고객군과 규모가 큰 고객군을 함께 판단합니다.")
+                    chart_card("세그먼트별 평균 매출", fig, "가치가 높은 고객군과 규모가 큰 고객군을 함께 봅니다.")
             if {"세그먼트", "평균위험"}.issubset(seg.columns):
                 seg_plot = seg.copy()
                 seg_plot["평균위험"] = pd.to_numeric(seg_plot["평균위험"], errors="coerce")
-                fig = px.bar(seg_plot, x="세그먼트", y="평균위험", text="평균위험", color="평균위험", color_continuous_scale="RdYlBu_r")
-                fig.update_layout(coloraxis_showscale=False)
+                fig = px.bar(seg_plot, x="세그먼트", y="평균위험", text="평균위험", color="평균위험", color_continuous_scale=["#FDE68A", "#E11D48"])
+                fig.update_layout(coloraxis_showscale=False, xaxis_title="", yaxis_title="평균 위험 점수")
                 fig.update_traces(texttemplate="%{text:.1f}", textposition="outside")
-                chart_card("세그먼트별 평균 위험도", fig, "어떤 고객군의 리텐션 개입 우선순위가 높은지 보여줍니다.")
-            table_block(seg, caption="세그먼트 상세 집계표")
+                chart_card("세그먼트별 평균 위험 점수", fig, "점수가 높은 고객군일수록 리텐션 개입이 먼저 필요합니다.", height=320)
+            table_block(seg, caption="세그먼트 상세 집계")
         else:
             st.info("세그먼트 데이터가 없습니다.")
 
     with tab_category:
-        section_header("카테고리 분석", "일반 카테고리 표가 아니라, 펫 운영자가 바로 실행할 수 있는 재구매·이탈 대응 포인트를 보여줍니다.", kicker="CATEGORY")
+        section_header("카테고리 분석", "펫 카테고리별 재구매 주기와 이탈 위험을 운영 액션과 함께 보여줍니다.")
 
         data_for_cat = df_work.copy() if isinstance(df_work, pd.DataFrame) and not df_work.empty else pd.DataFrame()
         cat_col = _pick_col(data_for_cat, ["카테고리", "category", "Category"])
@@ -1660,7 +1562,7 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
         pet_cat_churn = _prepare_category_churn_table(category_churn_df)
 
         core_points = _build_pet_core_points(refill_cycle)
-        insight_box("펫커머스 핵심 운영 포인트", core_points, tone="info")
+        insight_box("핵심 운영 포인트", core_points, tone="info")
 
         if isinstance(pet_refill, pd.DataFrame) and not pet_refill.empty:
             summary_cols = st.columns(min(3, len(pet_refill.head(3))))
@@ -1682,52 +1584,51 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                         x="펫카테고리",
                         y="총매출",
                         text="총매출",
-                        color="총매출",
-                        color_continuous_scale="Blues",
+                        color_discrete_sequence=[COLORS["primary"]],
                     )
-                    fig.update_layout(coloraxis_showscale=False)
+                    fig.update_layout(xaxis_title="", yaxis_title="총매출")
                     fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-                    chart_card("펫카테고리별 총매출", fig, "사료·소모품·건강관리 등 펫 운영 기준 카테고리로 다시 묶어 보여줍니다.")
+                    chart_card("카테고리별 총매출", fig, "사료·소모품·건강관리 등 펫 운영 기준으로 묶은 카테고리입니다.")
                 with c2:
                     fig = px.pie(pet_sales, names="펫카테고리", values="총매출", hole=0.58)
                     fig.update_traces(textposition="inside", textinfo="percent+label")
-                    chart_card("펫카테고리 매출 비중", fig, "어떤 펫 카테고리가 핵심 매출축인지 보여줍니다.")
+                    chart_card("카테고리 매출 비중", fig, "어떤 카테고리가 핵심 매출원인지 보여줍니다.")
 
-        section_header("재구매 주기 기반 운영 시점", "재구매주기를 보는 데서 끝내지 않고, 언제 어떤 CRM 액션을 넣을지까지 연결합니다.", kicker="REFILL")
+        section_header("재구매 주기와 알림 시점", "카테고리별 재구매 주기에 맞춰 언제 어떤 CRM 액션을 보낼지 정리했습니다.")
 
         if isinstance(pet_refill, pd.DataFrame) and not pet_refill.empty:
-            st.caption("반복소비 카테고리는 재구매주기보다 3~7일 앞서 알림하는 전략을 권장합니다.")
-            table_block(pet_refill, caption="펫카테고리별 재구매 주기 · 추천 발송 시점 · 운영 액션")
+            st.caption("반복 소비 카테고리는 재구매 주기보다 3~7일 먼저 알림을 보내는 것을 권장합니다.")
+            table_block(pet_refill, caption="카테고리별 재구매 주기 · 추천 발송 시점 · 운영 액션")
         else:
-            st.info("재구매주기 데이터가 없습니다.")
+            st.info("재구매 주기 데이터가 없습니다.")
 
-        section_header("다반려 추정 고객", "실제 반려 수를 확정하는 데이터는 아니지만, 구매 패턴 기반으로 다반려 가구 후보를 찾아 교차판매에 활용합니다.", kicker="MULTI-PET")
+        section_header("다반려 추정 고객", "실제 반려동물 수가 아닌 구매 패턴으로 추정한 다반려 가구 후보입니다. 교차판매 대상으로 활용합니다.")
 
         mp_cnt = int((pet_insights or {}).get("multi_pet_cnt", 0) or 0)
         mp_ratio = float((pet_insights or {}).get("multi_pet_ratio", 0) or 0)
 
         insight_box(
-            "다반려 추정 해석",
+            "다반려 추정 결과",
             [
                 f"다반려 추정 고객은 {_fmt_int(mp_cnt)}명, 전체의 {mp_ratio:.1f}%입니다.",
-                "강아지·고양이 키워드 동시 탐지 또는 카테고리 다양도/구매빈도 패턴을 기반으로 추정했습니다.",
+                "강아지·고양이 상품 동시 구매, 카테고리 다양도와 구매 빈도를 기준으로 추정했습니다.",
                 "이 고객군은 복합 장바구니, 소모품 세트, 교차 카테고리 추천의 우선 대상입니다.",
             ],
             tone="success",
         )
 
         if isinstance(pet_multi, pd.DataFrame) and not pet_multi.empty:
-            table_block(pet_multi, caption="다반려 추정 고객 Top 20")
+            table_block(pet_multi, caption="다반려 추정 고객 상위 20명")
         else:
             st.info("다반려 추정 데이터가 없습니다.")
 
-        section_header("핵심 카테고리 이탈 고객", "전체 고객 이탈이 아니라, 특정 고객이 우리 몰에서 특정 펫 카테고리 구매를 끊을 가능성을 탐지합니다.", kicker="CATEGORY CHURN")
+        section_header("핵심 카테고리 이탈 고객", "고객 전체 이탈이 아니라, 특정 카테고리 구매만 끊길 가능성이 있는 고객을 찾습니다.")
         insight_box(
             "왜 중요한가",
             [
-                "펫커머스에서는 간식은 사지만 사료는 다른 곳에서 사는 고객이 발생합니다.",
-                "이 기능은 고객 전체 이탈이 아니라 핵심 카테고리 이탈을 따로 포착합니다.",
-                "즉, '왜 우리 몰에서 사료만 빠졌는가?' 같은 운영 질문에 직접 연결됩니다.",
+                "펫커머스에서는 간식은 우리 몰에서 사도 사료는 다른 곳에서 사는 고객이 생깁니다.",
+                "고객 전체 이탈과 별개로 핵심 카테고리 이탈을 따로 잡아냅니다.",
+                "'왜 우리 몰에서 사료만 빠졌는가?' 같은 운영 질문에 바로 연결됩니다.",
             ],
             tone="info",
         )
@@ -1738,16 +1639,16 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
             ml_cnt = int((pet_cat_churn["예측방식"] == "ML").sum()) if "예측방식" in pet_cat_churn.columns else 0
             rule_cnt = int((pet_cat_churn["예측방식"] == "규칙기반").sum()) if "예측방식" in pet_cat_churn.columns else 0
 
-            st.markdown("#### 핵심 지표")
+            
             kc1, kc2, kc3, kc4 = st.columns(4)
             with kc1:
-                metric_card("휴면 위험", f"{dormant:,}건", "장기 미구매로 전환된 카테고리 고객")
+                metric_card("휴면", f"{dormant:,}건", "오래 구매가 끊긴 카테고리")
             with kc2:
-                metric_card("이탈 위험", f"{danger:,}건", "핵심 카테고리 이탈 가능 고객")
+                metric_card("이탈 위험", f"{danger:,}건", "곧 구매가 끊길 수 있는 카테고리")
             with kc3:
-                metric_card("ML 예측", f"{ml_cnt:,}건", "모델 기반으로 탐지된 건수")
+                metric_card("모델로 탐지", f"{ml_cnt:,}건", "ML 모델 기준")
             with kc4:
-                metric_card("규칙기반", f"{rule_cnt:,}건", "주기/경과일 기반 탐지 건수")
+                metric_card("규칙으로 탐지", f"{rule_cnt:,}건", "재구매 주기·경과일 기준")
 
             risk_filter = st.selectbox(
                 "위험도 필터",
@@ -1761,12 +1662,12 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
             else:
                 show_df = pet_cat_churn[pet_cat_churn["위험도"] != "정상"].copy()
 
-            table_block(show_df, caption=f"핵심 펫카테고리 이탈 위험 고객 ({risk_filter})")
+            table_block(show_df, caption=f"카테고리 이탈 위험 고객 · {risk_filter}")
 
             try:
                 csv_bytes = pet_cat_churn.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
-                    "카테고리 이탈 위험 고객 다운로드",
+                    "카테고리 이탈 위험 고객 CSV",
                     data=csv_bytes,
                     file_name="category_churn_risk.csv",
                     mime="text/csv",
@@ -1779,15 +1680,15 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
         with st.expander("데이터 구조 안내", expanded=False):
             if not cat_col:
                 st.warning(
-                    "카테고리 컬럼이 없어 펫 특화 분석 일부가 제한됩니다. "
-                    "재구매주기, 카테고리 이탈, 다반려 추정의 정확도가 낮아질 수 있습니다. "
-                    "쿠팡형 데이터처럼 카테고리가 상품데이터에만 있다면, 매핑 단계에서 카테고리 컬럼을 추가해주세요."
+                    "카테고리 컬럼이 없어 일부 분석이 제한됩니다. "
+                    "재구매 주기, 카테고리 이탈, 다반려 추정의 정확도가 낮아질 수 있어요. "
+                    "카테고리가 상품 데이터에만 있다면 매핑 단계에서 제품 정보 파일로 카테고리를 추가해주세요."
                 )
             else:
-                st.caption("현재 데이터에는 카테고리 정보가 포함되어 있어 펫 특화 분석을 수행했습니다.")
+                st.caption("카테고리 정보가 있어 카테고리 분석을 모두 수행했습니다.")
 
     with tab_ml:
-        section_header("ML 기반 이탈예측", "복잡한 모델 화면보다 지금 바로 챙겨야 할 고객과 추천 액션을 쉽게 보여줍니다.", kicker="ML")
+        section_header("ML 이탈예측", "고객 이력 구간별 모델이 계산한 이탈 위험을 바탕으로, 지금 챙겨야 할 고객과 액션을 보여줍니다.")
         avg_churn_prob = float((churn_summary or {}).get("avg_churn_prob", 0.0) or 0.0)
         ml_view = _prepare_ml_scored_view(churn_scored)
 
@@ -1797,11 +1698,11 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
 
         s1, s2, s3 = st.columns(3)
         with s1:
-            metric_card("이탈 위험 고객", f"{high_risk_count:,}명", "관리 필요 + 즉시 관리 고객")
+            metric_card("이탈 위험 고객", f"{high_risk_count:,}명", "그룹 안 위험도 상위 30%")
         with s2:
-            metric_card("즉시 관리 필요", f"{critical_count:,}명", "지금 바로 쿠폰/알림 권장")
+            metric_card("즉시 관리 필요", f"{critical_count:,}명", "위험도 상위 10% · 쿠폰·알림 우선")
         with s3:
-            metric_card("예상 방어 가능 매출", _fmt_currency(protectable_sales), "최근 30일 매출 기준")
+            metric_card("방어 가능 매출", _fmt_currency(protectable_sales), "이탈 위험 고객의 30일 기대 매출")
 
         if not ml_view.empty:
             insight_box("한눈에 보는 요약", _build_ml_easy_insights(ml_view), tone="info")
@@ -1823,16 +1724,11 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                         y="고객수",
                         text="고객수",
                         color="위험상태",
-                        color_discrete_map={
-                            "즉시 관리": "#EF4444",
-                            "관리 필요": "#F59E0B",
-                            "관심 필요": "#3B82F6",
-                            "안정": "#10B981",
-                        },
+                        color_discrete_map=RISK_COLORS,
                     )
                     fig.update_traces(textposition="outside")
                     fig.update_layout(xaxis_title="", yaxis_title="고객 수", showlegend=False, height=340)
-                    chart_card("위험상태별 고객 수", fig, "복잡한 확률 대신 지금 관리가 얼마나 필요한지만 보여줍니다.", height=340)
+                    chart_card("위험상태별 고객 수", fig, "즉시 관리·관리 필요가 이탈 위험 고객(상위 30%)입니다.", height=340)
 
             with top_right:
                 recency_bucket_df = _prepare_ml_recency_bucket_table(ml_view)
@@ -1844,28 +1740,28 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                         text="고객수",
                         color="휴면구간",
                         color_discrete_map={
-                            "0-30일": "#10B981",
-                            "31-60일": "#3B82F6",
-                            "61-90일": "#6366F1",
-                            "91-180일": "#F59E0B",
-                            "181일+": "#EF4444",
+                            "0-30일": "#C7D2FE",
+                            "31-60일": "#A5B4FC",
+                            "61-90일": "#818CF8",
+                            "91-180일": "#6366F1",
+                            "181일+": "#4338CA",
                         },
                     )
                     fig.update_traces(textposition="outside")
                     fig.update_layout(xaxis_title="휴면일수 구간", yaxis_title="고객 수", showlegend=False, height=340)
-                    chart_card("최근 구매가 끊긴 고객 수", fig, "어느 시점의 고객이 많이 쌓여 있는지 쉽게 확인할 수 있습니다.", height=340)
+                    chart_card("마지막 구매 후 경과일", fig, "구매가 끊긴 기간별 고객 수입니다.", height=340)
                 else:
                     st.info("휴면일수 기준 요약 차트를 만들 데이터가 없습니다.")
 
             action_df = _prepare_ml_action_counts(ml_view)
             if not action_df.empty:
-                section_header("추천 액션", "어려운 차트 대신 바로 실행할 수 있는 액션으로 정리했습니다.", kicker="ACTION")
+                section_header("추천 액션", "위험 고객에게 바로 실행할 수 있는 액션과 대상 고객 수입니다.")
                 action_cols = st.columns(min(3, len(action_df.head(3))))
                 for idx, (_, row) in enumerate(action_df.head(3).iterrows()):
                     with action_cols[idx]:
                         action_card(str(row.get("추천액션", "추천 액션")), f"대상 고객 {int(row.get('고객수', 0)):,}명", f"우선순위 {idx+1}")
 
-            section_header("우선 대응 인사이트", "카테고리보다 먼저, 누가 왜 위험한지 쉽게 읽을 수 있도록 정리했습니다.", kicker="INSIGHT")
+            section_header("우선 대응 포인트", "누가, 얼마나 위험한지 핵심만 정리했습니다.")
             insight_rows = []
             recency_bucket_df = _prepare_ml_recency_bucket_table(ml_view)
             if not recency_bucket_df.empty:
@@ -1889,9 +1785,9 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                     "항목": "가장 추천되는 액션",
                     "내용": f"{top_action['추천액션']} · 대상 고객 {int(top_action['고객수']):,}명",
                 })
-            table_block(pd.DataFrame(insight_rows), caption="지금 바로 보면 좋은 핵심 포인트", height=220)
+            table_block(pd.DataFrame(insight_rows))
 
-            section_header("방어 우선 고객", "누구를 먼저 챙길지 쉽게 볼 수 있도록 꼭 필요한 정보만 남겼습니다.", kicker="ACTIONABLE LIST")
+            section_header("방어 우선 고객", "먼저 챙길 고객 목록입니다. 필터와 정렬을 바꿔 CSV로 내려받을 수 있습니다.")
             filter_cols = st.columns(3)
             with filter_cols[0]:
                 state_options = ["전체", "즉시 관리", "관리 필요", "관심 필요", "안정"]
@@ -1916,7 +1812,7 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                 filtered = filtered.sort_values("expected_loss", ascending=False)
 
             easy_table = _prepare_ml_easy_table(filtered).head(int(top_n))
-            table_block(easy_table, caption="방어 우선 고객 리스트", height=460)
+            table_block(easy_table, height=460)
 
             dl_full = _prepare_ml_easy_table(filtered)
             dl_now = _prepare_ml_easy_table(filtered[filtered["risk_grade"] == "Critical"]) if "risk_grade" in filtered.columns else pd.DataFrame()
@@ -1924,7 +1820,7 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                 d1, d2 = st.columns(2)
                 with d1:
                     st.download_button(
-                        "방어 우선 고객 전체 다운로드",
+                        "필터 결과 전체 CSV",
                         data=dl_full.to_csv(index=False).encode("utf-8-sig"),
                         file_name="ml_priority_customers.csv",
                         mime="text/csv",
@@ -1932,7 +1828,7 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                     )
                 with d2:
                     st.download_button(
-                        "즉시 관리 고객만 다운로드",
+                        "즉시 관리 고객만 CSV",
                         data=dl_now.to_csv(index=False).encode("utf-8-sig"),
                         file_name="ml_critical_customers.csv",
                         mime="text/csv",
@@ -1956,12 +1852,12 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
         else:
             st.info("ML 이탈예측 결과가 없습니다.")
     with tab_refund:
-        section_header("환불 분석", "환불률과 환불 위험 고객, 카테고리별 환불 구조를 확인합니다.", kicker="REFUND")
+        section_header("환불 분석", "카테고리별 환불률과 환불이 잦은 고객을 확인합니다.")
         _render_negative_sales_mode_notice(negative_sales_mode)
 
         if isinstance(refund_category, pd.DataFrame) and not refund_category.empty and {"카테고리", "환불률"}.issubset(refund_category.columns):
             refund_plot = refund_category.copy()
-            refund_plot["환불률"] = pd.to_numeric(refund_plot["환불률"], errors="coerce")
+            refund_plot["환불률"] = pd.to_numeric(refund_plot["환불률"], errors="coerce") * 100
             refund_plot["환불률표시"] = refund_plot["환불률"].round(4)
             refund_plot["펫카테고리"] = refund_plot["카테고리"].apply(_pet_category_label)
             refund_chart = _prepare_category_axis_chart_df(refund_plot, ["환불률"])
@@ -1978,19 +1874,19 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                     "카테고리": True,
                     "펫카테고리": True,
                     "환불률": False,
-                    "환불률표시": ":.4f",
+                    "환불률표시": ":.2f",
                     "표시라벨": False,
                 },
-                color_continuous_scale="Reds",
+                color_continuous_scale=["#FECDD3", "#E11D48"],
             )
-            fig.update_layout(coloraxis_showscale=False, yaxis_title="카테고리", xaxis_title="환불률 (%)")
-            fig.update_traces(texttemplate="%{text:.4f}%", textposition="outside")
-            chart_card("카테고리별 환불률", fig, "하단 표와 같은 기준으로 환불률을 표시해 스케일 혼동을 줄였습니다.")
+            fig.update_layout(coloraxis_showscale=False, yaxis_title="", xaxis_title="환불률 (%)")
+            fig.update_traces(texttemplate="%{text:.2f}%", textposition="outside")
+            chart_card("카테고리별 환불률", fig, "카테고리별 주문 대비 환불 비율(%)입니다.")
 
         c1, c2 = st.columns(2)
         with c1:
             if isinstance(refund_customers, pd.DataFrame) and not refund_customers.empty:
-                table_block(refund_customers, caption="환불 위험 고객")
+                table_block(refund_customers, caption="환불이 잦은 고객")
             else:
                 st.info("환불 위험 고객 데이터가 없습니다.")
         with c2:
@@ -2006,7 +1902,7 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
         _render_saved_runs_comparison_tab(effective_user_key, is_member)
 
     with tab_inventory:
-        section_header("재고 전략 및 판매 예측", "품절로 인한 매출 손실을 줄이기 위해 카테고리별 안전재고 우선순위와 다음달 판매 규모를 함께 제안합니다.", kicker="INVENTORY STRATEGY")
+        section_header("재고 전략과 판매 예측", "품절로 인한 매출 손실을 줄이도록 카테고리별 안전재고 우선순위와 다음 달 판매 규모를 제안합니다.")
         forecast_value = int((forecast or {}).get("value", 0) or 0)
         avg_daily_revenue = float((forecast or {}).get("avg_daily_revenue", 0) or 0)
         basis_days = int((forecast or {}).get("basis_days", 0) or 0)
@@ -2015,11 +1911,11 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
 
         c1, c2, c3 = st.columns(3)
         with c1:
-            metric_card("다음달 예상 매출", _fmt_currency(forecast_value), f"최근 {basis_days}일 추세를 반영한 간이 예측")
+            metric_card("다음 달 예상 매출", _fmt_currency(forecast_value), f"최근 {basis_days}일 일평균 기준 간이 예측")
         with c2:
-            metric_card("일평균 예상 매출", _fmt_currency(avg_daily_revenue), "최근 거래 흐름 기준 일평균 매출")
+            metric_card("일평균 매출", _fmt_currency(avg_daily_revenue), "최근 거래 기준")
         with c3:
-            metric_card("최우선 확보 카테고리", f"{_fmt_int(priority_count)}개", "즉시 발주 또는 일일 점검 필요")
+            metric_card("최우선 확보 카테고리", f"{_fmt_int(priority_count)}개", "즉시 발주 또는 매일 점검")
 
         insight_box("재고 전략 요약", _build_inventory_points(inv, forecast, total_customers), tone="info")
 
@@ -2048,15 +1944,15 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                         "표시라벨": False,
                     },
                     color_discrete_map={
-                        "최우선 확보": "#EF4444",
+                        "최우선 확보": "#E11D48",
                         "집중 관리": "#F59E0B",
-                        "기본 운영": "#10B981",
+                        "기본 운영": "#A5B4FC",
                     },
-                    color_continuous_scale="Teal",
+                    color_continuous_scale=SEQ_SCALE,
                 )
-                fig.update_layout(coloraxis_showscale=False, yaxis_title="카테고리", xaxis_title="안전재고량")
+                fig.update_layout(coloraxis_showscale=False, yaxis_title="", xaxis_title="안전재고량")
                 fig.update_traces(textposition="outside")
-                chart_card("카테고리별 안전재고량", fig, "실제 카테고리 기준으로 권장 안전재고량을 비교하고, 우선순위는 색상으로만 표시합니다.")
+                chart_card("카테고리별 안전재고량", fig, "색은 확보 우선순위입니다.")
 
             with chart_right:
                 sales_plot = inventory_chart.sort_values("표시라벨", ascending=True).copy()
@@ -2076,16 +1972,16 @@ def report_step(df_std: pd.DataFrame, user_key: str = "guest"):
                             "표시라벨": False,
                         },
                         color_discrete_map={
-                            "최우선 확보": "#EF4444",
+                            "최우선 확보": "#E11D48",
                             "집중 관리": "#F59E0B",
-                            "기본 운영": "#10B981",
+                            "기본 운영": "#A5B4FC",
                         },
-                        color_continuous_scale="Blues",
+                        color_continuous_scale=SEQ_SCALE,
                     )
-                    fig2.update_layout(coloraxis_showscale=False, yaxis_title="카테고리", xaxis_title="예상판매량")
+                    fig2.update_layout(coloraxis_showscale=False, yaxis_title="", xaxis_title="예상 판매량")
                     fig2.update_traces(textposition="outside")
-                    chart_card("카테고리별 예상 판매량", fig2, "같은 카테고리 순서를 유지해 안전재고량과 예상 판매량을 쉽게 비교할 수 있습니다.")
+                    chart_card("카테고리별 예상 판매량", fig2, "왼쪽 그래프와 같은 순서라 안전재고량과 나란히 비교할 수 있습니다.")
 
-            table_block(inventory_show, caption="재고 전략 상세표")
+            table_block(inventory_show, caption="재고 전략 상세")
         else:
             st.info("재고 전략을 계산할 수 있는 데이터가 없습니다.")

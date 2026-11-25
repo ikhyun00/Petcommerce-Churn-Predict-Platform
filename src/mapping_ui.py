@@ -138,7 +138,7 @@ def _mapping_table_for_sample() -> pd.DataFrame:
 def _standardize_mapped_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "거래일시" in out.columns:
-        out["거래일시"] = pd.to_datetime(out["거래일시"], errors="coerce")
+        out["거래일시"] = pd.to_datetime(out["거래일시"], errors="coerce", format="mixed")
     if "매출" in out.columns:
         out["매출"] = (
             out["매출"]
@@ -362,9 +362,11 @@ def _step_label(num: str, title: str, desc: str = ""):
     desc_html = f'<div class="step-section-desc">{desc}</div>' if desc else ""
     st.markdown(
         f"""
-        <div style="margin: 22px 0 12px 0;">
-          <div class="step-section-label">STEP {num}</div>
-          <div class="step-section-title">{title}</div>
+        <div style="margin: 28px 0 12px 0;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div class="step-section-label">{num}</div>
+            <div class="step-section-title">{title}</div>
+          </div>
           {desc_html}
         </div>
         """,
@@ -379,20 +381,19 @@ def _render_mapping_intro(is_sample: bool) -> None:
         st.markdown(
             """
             <div class="card-muted">
-              <b>샘플 데이터로 연습 중 👶</b><br/>
-              이 단계는 컬럼 이름이 제각각인 CSV 또는 XLSX 파일도 분석할 수 있게
-              <b>표준 컬럼</b>으로 맞춰주는 과정입니다.<br/>
-              먼저 <b>필수 4개</b>만 맞추면 바로 품질 점검까지 진행할 수 있습니다.
+              <b>샘플 데이터로 진행 중이에요</b><br/>
+              컬럼 이름이 제각각인 파일도 분석할 수 있도록 <b>표준 컬럼</b>에 연결하는 단계입니다.
+              <b>필수 4개</b>만 맞추면 바로 품질 점검까지 진행할 수 있어요.
             </div>
             """,
             unsafe_allow_html=True,
         )
-        with st.expander("📌 샘플 데이터 추천 매핑표", expanded=True):
+        with st.expander("샘플 데이터 추천 매핑", expanded=True):
             st.dataframe(_mapping_table_for_sample(), use_container_width=True)
-            st.caption("드롭다운 기본값이 이미 채워져 있으면 그대로 '확인'만 누르세요.")
+            st.caption("기본값이 이미 채워져 있으니 그대로 확인을 누르면 됩니다.")
     else:
         st.caption(f"필수 4개({DISPLAY_REQUIRED})만 매핑하면 품질 점검까지 진행할 수 있어요.")
-        with st.expander("도움말 (필요할 때만 보기)", expanded=False):
+        with st.expander("매핑 도움말", expanded=False):
             st.markdown("##### 매핑은 이렇게 하시면 됩니다")
             st.caption(
                 f"업로드한 파일의 컬럼명을 우리 앱의 표준 컬럼에 1:1로 연결하면 됩니다. "
@@ -461,7 +462,7 @@ def _render_mapping_form(cols: list[str], guesses: dict[str, str | None], is_sam
                 selected[std_col] = dropdown(std_col, guesses.get(std_col), key=f"req_{std_col}")
 
         st.markdown("##### 음수 매출 처리 방식")
-        st.caption("음수 매출은 환불/취소/정산조정/입력오류일 수 있습니다.")
+        st.caption("음수 매출은 환불·취소·정산 조정 또는 입력 오류일 수 있어요.")
 
         mode_options = ["refund", "exclude", "keep"]
         saved_mode = st.session_state.get("negative_sales_mode", "refund")
@@ -483,18 +484,18 @@ def _render_mapping_form(cols: list[str], guesses: dict[str, str | None], is_sam
         missing_required = [k for k in CORE_REQUIRED if selected.get(k) is None]
 
         if duplicates:
-            st.error(f"중복 매핑이 있습니다: {duplicates}")
+            st.error(f"같은 컬럼이 두 번 선택되었습니다: {', '.join(duplicates)}")
         if missing_required:
             st.warning(
-                f"필수 컬럼이 아직 비어있어요: {missing_required}"
+                f"아직 연결하지 않은 필수 컬럼: {', '.join(missing_required)}"
                 if is_sample
-                else f"필수 컬럼 누락: {missing_required}"
+                else f"필수 컬럼 누락: {', '.join(missing_required)}"
             )
 
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
         c1, c2 = st.columns([1, 1], gap="small")
-        back = c1.form_submit_button("← 업로드로 돌아가기", use_container_width=True)
-        confirm = c2.form_submit_button("✅ 확인 및 품질 점검", type="primary", use_container_width=True)
+        back = c1.form_submit_button("← 이전 단계", use_container_width=True)
+        confirm = c2.form_submit_button("확인하고 품질 점검", type="primary", use_container_width=True)
 
     return selected, negative_sales_mode, duplicates, missing_required, back, confirm
 
@@ -534,7 +535,7 @@ def _process_mapping_confirmation(
         st.session_state["df_std"] = df_std_processed
         st.session_state["quality_result"] = quality_result
         st.session_state["mapping_confirmed"] = True
-        st.success("✅ 매핑과 품질 점검이 완료됐어요. 아래에서 결과를 확인하세요.")
+        st.success("매핑과 품질 점검이 끝났어요. 아래에서 결과를 확인하세요.")
         return df_std_processed
     except Exception as e:
         st.session_state["mapping_confirmed"] = False
@@ -556,10 +557,10 @@ def render_quality_section(quality_result: dict):
     negative_sales_count = int(quality_result.get("negative_sales_count", 0) or 0)
 
     color_map = {
-        "A": {"main": "#16a34a", "bg": "rgba(22,163,74,0.07)", "border": "rgba(22,163,74,0.22)", "label": "매우 양호"},
-        "B": {"main": "#2563eb", "bg": "rgba(37,99,235,0.07)", "border": "rgba(37,99,235,0.22)", "label": "양호"},
-        "C": {"main": "#d97706", "bg": "rgba(245,158,11,0.08)", "border": "rgba(245,158,11,0.26)", "label": "주의 필요"},
-        "D": {"main": "#dc2626", "bg": "rgba(239,68,68,0.07)", "border": "rgba(239,68,68,0.22)", "label": "개선 필요"},
+        "A": {"main": "#059669", "bg": "#F0FDF7", "border": "#A7F3D0", "label": "매우 양호"},
+        "B": {"main": "#4F46E5", "bg": "#F5F7FF", "border": "#C7D2FE", "label": "양호"},
+        "C": {"main": "#B45309", "bg": "#FFFBEB", "border": "#FDE68A", "label": "주의 필요"},
+        "D": {"main": "#DC2626", "bg": "#FEF2F2", "border": "#FECACA", "label": "개선 필요"},
     }
     theme = color_map.get(grade, color_map["D"])
 
@@ -575,38 +576,23 @@ def render_quality_section(quality_result: dict):
         "D": "현재 데이터 상태로는 결과 신뢰도가 낮을 수 있습니다. 매핑 또는 원본 파일을 다시 확인하세요.",
     }
 
-    _step_label("03", "데이터 품질 점검", "표준화된 데이터의 품질 지표와 주요 이슈를 확인합니다.")
+    _step_label("4", "데이터 품질 점검", "표준화된 데이터의 품질 지표와 주요 이슈를 확인합니다.")
 
     st.markdown(
         f"""
-        <div class="quality-header-card" style="
-            border: 1px solid {theme['border']};
-            background: {theme['bg']};
-        ">
-            <div style="display:flex; justify-content:space-between; align-items:center;
-                        flex-wrap:wrap; gap:14px;">
+        <div class="quality-header-card" style="border:1px solid {theme['border']}; background:{theme['bg']};">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
                 <div>
-                    <div style="font-size:11px; font-weight:800; color:{theme['main']};
-                                letter-spacing:0.08em; text-transform:uppercase; margin-bottom:8px;">
-                        DATA QUALITY CHECK
-                    </div>
-                    <div style="font-size:26px; font-weight:900; color:#1f2937; line-height:1.1;">
-                        품질 등급 &nbsp;<span style="color:{theme['main']};">{grade}</span>
-                    </div>
-                    <div style="font-size:13px; color:#4b5563; margin-top:7px; line-height:1.65;">
-                        {theme['label']} · {guide_map.get(grade, "")}
-                    </div>
-                    <div style="font-size:12px; color:#6b7280; margin-top:5px;">
-                        품질 점수 {score} / 100
-                    </div>
+                    <div style="font-size:13px; font-weight:600; color:{theme['main']}; margin-bottom:6px;">{theme['label']}</div>
+                    <div style="font-size:22px; font-weight:700; color:var(--ink); letter-spacing:-0.02em;">품질 점수 {score}점</div>
+                    <div style="font-size:14px; color:var(--ink-2); margin-top:6px; line-height:1.6;">{guide_map.get(grade, "")}</div>
                 </div>
-                <div style="
-                    min-width:82px; text-align:center;
-                    padding:12px 16px; border-radius:18px;
-                    background:white; border:1px solid {theme['border']};
-                ">
-                    <div style="font-size:11px; color:#6b7280; font-weight:700; margin-bottom:4px;">GRADE</div>
-                    <div style="font-size:36px; font-weight:900; color:{theme['main']}; line-height:1;">{grade}</div>
+                <div style="width:72px; height:72px; border-radius:16px; background:#fff; border:1px solid {theme['border']};
+                            display:grid; place-items:center; text-align:center;">
+                    <div>
+                        <div style="font-size:11px; color:var(--muted); font-weight:600;">등급</div>
+                        <div style="font-size:30px; font-weight:800; color:{theme['main']}; line-height:1.05;">{grade}</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -616,7 +602,7 @@ def render_quality_section(quality_result: dict):
 
     metric_items = [
         ("전체 행 수", stats.get("전체 행 수", 0)),
-        ("필수컬럼 결측치", stats.get("필수컬럼 결측치 수", 0)),
+        ("필수 컬럼 결측치", stats.get("필수컬럼 결측치 수", 0)),
         ("중복 주문", stats.get("중복 주문 수", 0)),
         ("음수 매출", stats.get("음수 매출 수", 0)),
     ]
@@ -624,22 +610,15 @@ def render_quality_section(quality_result: dict):
     for i, (label, value) in enumerate(metric_items):
         m_cols[i].markdown(
             f"""
-            <div style="
-                border: 1px solid rgba(15,23,42,0.07);
-                background: white;
-                border-radius: 16px;
-                padding: 16px 16px 14px;
-                box-shadow: 0 2px 10px rgba(15,23,42,0.04);
-            ">
-                <div style="font-size:11px; color:#6b7280; font-weight:700;
-                            text-transform:uppercase; letter-spacing:0.04em;">{label}</div>
-                <div style="font-size:22px; font-weight:900; color:#111827; margin-top:8px;">{value:,}</div>
+            <div class="kpi-shell" style="min-height:auto;">
+                <div class="kpi-label">{label}</div>
+                <div class="kpi-value" style="font-size:24px;">{value:,}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
     info_col, issue_col = st.columns([1, 1], gap="large")
 
@@ -648,7 +627,7 @@ def render_quality_section(quality_result: dict):
         st.markdown(
             f"""
             <div class="info-banner">
-                <b>현재 상태</b><br/>{guide_map.get(grade, "")}
+                <b>현재 상태</b><br/>{theme['label']} · 품질 점수 {score}/100
             </div>
             """,
             unsafe_allow_html=True,
@@ -656,9 +635,7 @@ def render_quality_section(quality_result: dict):
         if negative_sales_count > 0:
             st.markdown(
                 f"""
-                <div style="margin-top:10px; border:1px solid rgba(139,92,246,0.18);
-                    background:rgba(139,92,246,0.05); border-radius:16px;
-                    padding:14px 16px; line-height:1.75; color:#1f2937; font-size:13px;">
+                <div class="info-banner">
                     <b>음수 매출 처리 방식</b><br/>
                     음수 매출 <b>{negative_sales_count}건</b>은 현재
                     <b>{mode_label_map.get(negative_sales_mode, negative_sales_mode)}</b>으로 설정되어 있습니다.
@@ -669,9 +646,7 @@ def render_quality_section(quality_result: dict):
         if refund_count > 0:
             st.markdown(
                 f"""
-                <div style="margin-top:10px; border:1px solid rgba(124,58,237,0.18);
-                    background:rgba(124,58,237,0.05); border-radius:16px;
-                    padding:14px 16px; line-height:1.75; color:#1f2937; font-size:13px;">
+                <div class="info-banner">
                     <b>환불 분석 활용</b><br/>
                     음수 매출 <b>{refund_count}건</b>은 환불/취소 후보로 보고 이후 환불 분석에 활용합니다.
                 </div>
@@ -681,9 +656,7 @@ def render_quality_section(quality_result: dict):
         for note in info_notes:
             st.markdown(
                 f"""
-                <div style="margin-top:10px; border:1px solid rgba(14,165,233,0.16);
-                    background:rgba(14,165,233,0.05); border-radius:14px;
-                    padding:12px 14px; color:#334155; line-height:1.65; font-size:13px;">
+                <div class="info-banner">
                     {note}
                 </div>
                 """,
@@ -696,10 +669,7 @@ def render_quality_section(quality_result: dict):
             for issue in issues:
                 st.markdown(
                     f"""
-                    <div style="border:1px solid rgba(239,68,68,0.14);
-                        background:rgba(239,68,68,0.04); border-radius:12px;
-                        padding:11px 14px; margin-bottom:9px;
-                        color:#374151; line-height:1.65; font-size:13px;">
+                    <div class="danger-banner" style="margin:0 0 8px;">
                         {issue}
                     </div>
                     """,
@@ -709,18 +679,17 @@ def render_quality_section(quality_result: dict):
             st.markdown(
                 """
                 <div class="success-banner">
-                    ✅ 주요 품질 문제는 감지되지 않았습니다.
+                    주요 품질 문제는 발견되지 않았습니다.
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
-    st.markdown("##### 다음 단계 안내")
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
     if grade in ("A", "B"):
         st.markdown(
-            '<div class="success-banner">매핑과 품질 점검이 완료되었습니다. 아래 버튼으로 리포트 단계로 이동할 수 있습니다.</div>',
+            '<div class="success-banner">분석할 준비가 됐어요. 아래 버튼으로 리포트를 열어보세요.</div>',
             unsafe_allow_html=True,
         )
     elif grade == "C":
@@ -738,19 +707,21 @@ def render_quality_section(quality_result: dict):
 # ─── Main step ───────────────────────────────────────────────────────────────
 
 def mapping_step(df_raw: pd.DataFrame):
-    st.markdown('<div class="page-title">컬럼 매핑 & 품질 점검</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="page-subtitle">업로드한 데이터의 컬럼을 표준 컬럼에 연결하고 품질을 확인합니다.</div>',
+        '<div class="page-head"><div class="page-title">컬럼 매핑 · 품질 점검</div>'
+        '<div class="page-subtitle">업로드한 파일의 컬럼을 표준 컬럼에 연결하고, 분석 전에 데이터 품질을 확인합니다.</div></div>',
         unsafe_allow_html=True,
     )
-    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    period_message = st.session_state.get("upload_short_period_message", "")
+    if st.session_state.get("upload_short_period_warning") and period_message:
+        st.markdown(f'<div class="warn-banner">{period_message}</div>', unsafe_allow_html=True)
 
     is_sample = st.session_state.get("data_source") == "sample"
     cols = list(df_raw.columns)
     _init_mapping_session_state()
 
     _step_label(
-        "01",
+        "1",
         "데이터 확인",
         "샘플 데이터를 먼저 확인하고, 다음 단계에서 표준 컬럼으로 맞춰볼게요." if is_sample
         else "업로드한 데이터가 맞는지 확인하세요.",
@@ -763,7 +734,7 @@ def mapping_step(df_raw: pd.DataFrame):
         guesses.update({k: v for k, v in hint.items() if v in cols})
 
     _step_label(
-        "02",
+        "2",
         "컬럼 매핑",
         "업로드 파일 컬럼을 표준 컬럼에 연결해 주세요." if not is_sample
         else "샘플은 기본값이 대부분 자동으로 채워져 있어요.",
@@ -796,14 +767,14 @@ def mapping_step(df_raw: pd.DataFrame):
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         st.divider()
 
-        _step_label("02-b", "표준화 결과 미리보기", "매핑 후 변환된 데이터 앞부분을 확인하세요.")
+        _step_label("3", "표준화 결과 미리보기", "매핑 후 변환된 데이터의 앞부분입니다.")
         st.dataframe(df_std.head(20), use_container_width=True)
 
         if not CategoryMerger.has_category(df_std):
             st.divider()
             _step_label(
-                "02-c",
-                "카테고리 정보 추가 (선택사항)",
+                "선택",
+                "카테고리 정보 추가",
                 "제품 정보 파일이 있으면 카테고리를 자동으로 추가할 수 있습니다.",
             )
             merged_df = render_category_merge_section(df_std)
@@ -817,15 +788,15 @@ def mapping_step(df_raw: pd.DataFrame):
         st.divider()
         c1, c2 = st.columns([1, 1], gap="small")
         with c1:
-            if st.button("📊 리포트 단계로 이동", use_container_width=True, type="primary"):
+            if st.button("리포트 보기 →", use_container_width=True, type="primary"):
                 st.session_state["step"] = 2
                 st.rerun()
         with c2:
-            if st.button("🔄 매핑 다시 확인", use_container_width=True):
-                st.info("매핑 값 또는 음수 매출 처리 방식을 수정한 뒤 다시 '확인'을 눌러주세요.")
+            if st.button("매핑 다시 하기", use_container_width=True):
+                st.info("위에서 매핑이나 음수 매출 처리 방식을 바꾼 뒤 다시 확인을 눌러주세요.")
 
         if is_sample:
-            st.caption("샘플은 연습용입니다. 실제 데이터도 같은 방식으로 매핑하면 됩니다.")
+            st.caption("실제 데이터도 같은 방식으로 매핑하면 됩니다.")
 
         return df_std
 

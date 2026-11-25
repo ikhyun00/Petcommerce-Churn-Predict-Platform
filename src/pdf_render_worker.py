@@ -17,15 +17,15 @@ def main() -> int:
     pdf_path = Path(payload["pdf_path"]).resolve()
     css_path = Path(payload["css_path"]).resolve()
 
-    html = html_path.read_text(encoding="utf-8")
     css = css_path.read_text(encoding="utf-8")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={"width": 1440, "height": 2200})
         page.emulate_media(media="print")
-        page.set_content(html, wait_until="networkidle")
+        page.goto(html_path.as_uri(), wait_until="networkidle")
         page.add_style_tag(content=css)
+        page.evaluate("document.fonts.ready")
         page.pdf(
             path=str(pdf_path),
             format="A4",
